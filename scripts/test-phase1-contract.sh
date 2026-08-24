@@ -14,8 +14,8 @@ grep -q '^ProtectSystem=strict$' packaging/systemd/node-activity-reporter.servic
 grep -q 'resources: \["nodeactivities/status"\]' examples/nodeactivity-rbac.yaml
 grep -q 'resourceNames: \["homelabdesktop"\]' examples/nodeactivity-rbac.yaml
 
-if rg -n 'resources:.*\bnodes\b|/api/v1/nodes|corev1\.Node' \
-  --glob '!**/*_test.go' cmd/node-activity-reporter internal/reporter examples/nodeactivity-rbac.yaml; then
+if grep -R -n -E --exclude='*_test.go' 'resources:.*nodes|/api/v1/nodes|corev1\.Node' \
+  cmd/node-activity-reporter internal/reporter examples/nodeactivity-rbac.yaml; then
   echo 'Node mutation surface found in Phase 1 implementation' >&2
   exit 1
 fi

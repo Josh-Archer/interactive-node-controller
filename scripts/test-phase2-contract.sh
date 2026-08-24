@@ -26,8 +26,8 @@ assert documents[0] == documents[1], "chart CRD must be byte-for-byte semantic e
 print("phase 2 CRD contract checks passed")
 PY
 
-rg -q 'resources: \[nodes\]' chart/templates/rbac.yaml
-rg -q 'resources: \[nodeactivities/status\]' chart/templates/rbac.yaml
-rg -q 'TaintAppliedCondition' internal/controller/nodeactivity_controller.go
-rg -q 'reconcileOwnedTaint' internal/controller/nodeactivity_controller.go
+grep -q 'resources: \[nodes\]' chart/templates/rbac.yaml
+grep -q 'resources: \[nodeactivities/status\]' chart/templates/rbac.yaml
+grep -q 'TaintAppliedCondition' internal/controller/nodeactivity_controller.go
+grep -q 'reconcileOwnedTaint' internal/controller/nodeactivity_controller.go
 echo 'phase 2 contract checks passed'
