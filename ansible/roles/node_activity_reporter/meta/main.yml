@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: node_activity_reporter
+  author: Josh Archer
+  description: Install the Interactive Node Controller Phase 1 host reporter
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - all
+dependencies: []

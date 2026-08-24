@@ -1,0 +1,31 @@
+[Unit]
+Description=Interactive Node Activity Host Reporter
+Documentation=https://github.com/Josh-Archer/interactive-node-controller
+After=network-online.target systemd-logind.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ node_activity_reporter_user }}
+Group={{ node_activity_reporter_group }}
+ExecStart={{ node_activity_reporter_binary_path }} --config {{ node_activity_reporter_config_path }}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

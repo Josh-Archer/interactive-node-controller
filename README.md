@@ -14,6 +14,32 @@ The host reporter never patches Kubernetes `Node` objects. It may update only it
 - Mutating workload replicas or implicitly draining every pod.
 - Assuming a desktop, GPU vendor, runtime, or cloud provider.
 
+## Phase 1 host reporter
+
+Phase 1 includes a production-oriented Linux host reporter, systemd unit, and
+Ansible role. The reporter samples optional host signals, applies deterministic
+`game > interactive > idle` precedence, debounces transitions, and emits an
+explicit heartbeat with state, activity class, reason, observation time, and
+generation. Provider uncertainty reports `unknown`, then `stale`; it never
+opens the node for scheduling.
+
+The safe default writes JSON to stdout because the `NodeActivity` CRD does not
+exist until Phase 2. Kubernetes mode has one hard-coded operation: patch the
+`status` subresource of one validated, namespaced `NodeActivity` name. It has no
+Node client or generic resource path.
+
+See [the host reporter guide](docs/host-reporter.md) for configuration, signal
+semantics, credentials, systemd/Ansible installation, and the Phase 1 runbook.
+
 ## Development
 
-Go is the planned implementation language. The initial scaffold contains no Phase 1 logic. Run `make test` and see [docs/roadmap.md](docs/roadmap.md).
+Go 1.23 or newer is required.
+
+```bash
+make fmt
+make verify
+make build-linux-amd64
+```
+
+`make verify` runs formatting checks, unit tests, vet, and repository contract
+checks. See [docs/roadmap.md](docs/roadmap.md) for later phases.

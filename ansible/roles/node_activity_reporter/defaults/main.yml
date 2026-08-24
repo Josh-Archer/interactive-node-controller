@@ -1,0 +1,50 @@
+---
+node_activity_reporter_install_method: binary
+node_activity_reporter_binary_src: ""
+node_activity_reporter_package_name: ""
+node_activity_reporter_binary_path: /usr/local/bin/node-activity-reporter
+node_activity_reporter_user: nodeactivity
+node_activity_reporter_group: nodeactivity
+node_activity_reporter_config_dir: /etc/node-activity-reporter
+node_activity_reporter_config_path: /etc/node-activity-reporter/config.yaml
+node_activity_reporter_service_name: node-activity-reporter
+
+# stdout keeps Phase 1 safe before the NodeActivity CRD exists. Consumers must
+# explicitly opt into Kubernetes mode and provision a narrowly scoped credential.
+node_activity_reporter_config:
+  agent:
+    sample_interval: 5s
+    heartbeat_interval: 15s
+    stale_after: 1m
+    fail_closed: true
+    debounce:
+      game_samples: 1
+      interactive_samples: 2
+      idle_samples: 3
+  signals:
+    logind:
+      enabled: true
+      command: /usr/bin/loginctl
+      graphical_types:
+        - wayland
+        - x11
+      timeout: 3s
+    game_process:
+      enabled: false
+      proc_root: /proc
+      names: []
+      command_line_contains: []
+    nvidia:
+      enabled: false
+      command: /usr/bin/nvidia-smi
+      utilization_floor_percent: 20
+      timeout: 3s
+  reporter:
+    mode: stdout
+    kubernetes:
+      api_server: https://kubernetes.example.invalid:6443
+      namespace: interactive-node-controller
+      name: replace-with-enrolled-resource-name
+      token_file: /var/lib/node-activity-reporter/token
+      ca_file: /var/lib/node-activity-reporter/ca.crt
+      timeout: 10s

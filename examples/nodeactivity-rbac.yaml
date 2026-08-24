@@ -1,0 +1,33 @@
+# Phase 2 will install the NodeActivity CRD. This example is intentionally not
+# directly applicable until then. Replace both example names with the single
+# resource enrolled to this host reporter.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homelabdesktop-reporter
+  namespace: interactive-node-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: homelabdesktop-reporter
+  namespace: interactive-node-controller
+rules:
+  - apiGroups: ["availability.interactive-node.io"]
+    resources: ["nodeactivities/status"]
+    resourceNames: ["homelabdesktop"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: homelabdesktop-reporter
+  namespace: interactive-node-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: homelabdesktop-reporter
+subjects:
+  - kind: ServiceAccount
+    name: homelabdesktop-reporter
+    namespace: interactive-node-controller
