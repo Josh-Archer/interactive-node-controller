@@ -1,0 +1,30 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "interactive-node-controller.fullname" . }}
+rules:
+  - apiGroups: [availability.interactive-node.io]
+    resources: [nodeactivities]
+    verbs: [get, list, watch]
+  - apiGroups: [availability.interactive-node.io]
+    resources: [nodeactivities/status]
+    verbs: [get, patch, update]
+  - apiGroups: ['']
+    resources: [nodes]
+    verbs: [get, patch, update]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "interactive-node-controller.fullname" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "interactive-node-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "interactive-node-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

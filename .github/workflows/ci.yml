@@ -21,8 +21,11 @@ jobs:
         with:
           python-version: '3.x'
       - run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - uses: azure/setup-helm@v4
       - run: make verify
       - run: make build-linux-amd64
+      - run: make build-controller
+      - run: make docker-build
       - name: Upload Linux amd64 test build
         uses: actions/upload-artifact@v4
         with:

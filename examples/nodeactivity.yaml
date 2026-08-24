@@ -1,0 +1,11 @@
+apiVersion: availability.interactive-node.io/v1alpha1
+kind: NodeActivity
+metadata:
+  name: workstation-1
+  namespace: interactive-node-controller
+  labels:
+    app.kubernetes.io/part-of: interactive-node-controller
+spec:
+  # This enrollment is Git-owned and immutable after creation. The host agent
+  # may patch only this resource's status subresource.
+  nodeName: workstation-1

@@ -26,8 +26,14 @@ The project supplies a Go controller, versioned `NodeActivity` CRD, OCI Helm cha
 
 Phase 1 implementation and operational details are documented in
 [host-reporter.md](host-reporter.md). The reporter defaults to stdout until the
-Phase 2 CRD and controller establish the live API contract.
+Phase 2 CRD and controller establish the live API contract. Phase 2 deliberately
+does not evict Pods; that safety boundary remains Phase 3.
 
 ## Release model
 
-PR CI uses least privilege and concurrency cancellation. Tag/manual release will build linux/amd64 and linux/arm64 images, publish an OCI Helm chart, generate SBOM/provenance, and keylessly sign when artifacts exist. The scaffold gates artifact jobs because no implementation artifacts exist yet; a green scaffold run is not a usable release. Consumers pin chart version and image digest through reviewed GitOps changes.
+PR CI uses least privilege and concurrency cancellation. It validates the Go
+controller, chart rendering, and a local container build. Tag/manual release
+builds linux/amd64 and linux/arm64 images, publishes an OCI Helm chart,
+generates SBOM/provenance, and keylessly signs the image. Consumers pin chart
+version and image digest through reviewed GitOps changes; Phase 2 has not
+created or deployed a release to any consumer cluster.
