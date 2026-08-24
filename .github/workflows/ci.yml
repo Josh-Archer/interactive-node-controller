@@ -15,9 +15,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-          cache: false
-        continue-on-error: true
-      - run: make test
-      - if: hashFiles('go.mod') != ''
-        run: go test ./... && go vet ./...
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - run: make verify
+      - run: make build-linux-amd64
+      - name: Upload Linux amd64 test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-activity-reporter-linux-amd64
+          path: bin/node-activity-reporter-linux-amd64
+          if-no-files-found: error
+          retention-days: 7
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python -m pip install --disable-pip-version-check ansible-core==2.18.*
+      - run: make ansible-syntax

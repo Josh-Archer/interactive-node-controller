@@ -1,0 +1,77 @@
+---
+- name: Validate node activity reporter installation inputs
+  ansible.builtin.assert:
+    that:
+      - node_activity_reporter_install_method in ['binary', 'package']
+      - node_activity_reporter_install_method != 'binary' or node_activity_reporter_binary_src | length > 0
+      - node_activity_reporter_install_method != 'package' or node_activity_reporter_package_name | length > 0
+      - node_activity_reporter_config.agent.fail_closed | bool
+    fail_msg: >-
+      Select binary with node_activity_reporter_binary_src or package with
+      node_activity_reporter_package_name; Phase 1 requires fail_closed=true.
+
+- name: Create node activity reporter group
+  ansible.builtin.group:
+    name: "{{ node_activity_reporter_group }}"
+    system: true
+
+- name: Create node activity reporter user
+  ansible.builtin.user:
+    name: "{{ node_activity_reporter_user }}"
+    group: "{{ node_activity_reporter_group }}"
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Install supplied reporter binary
+  ansible.builtin.copy:
+    src: "{{ node_activity_reporter_binary_src }}"
+    dest: "{{ node_activity_reporter_binary_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: node_activity_reporter_install_method == 'binary'
+  notify: Restart node activity reporter
+
+- name: Install reporter from configured package source
+  ansible.builtin.package:
+    name: "{{ node_activity_reporter_package_name }}"
+    state: present
+  when: node_activity_reporter_install_method == 'package'
+  notify: Restart node activity reporter
+
+- name: Create reporter configuration directory
+  ansible.builtin.file:
+    path: "{{ node_activity_reporter_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ node_activity_reporter_group }}"
+    mode: "0750"
+
+- name: Render reporter configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ node_activity_reporter_config_path }}"
+    owner: root
+    group: "{{ node_activity_reporter_group }}"
+    mode: "0640"
+    validate: "{{ node_activity_reporter_binary_path }} --config %s --check-config"
+  notify: Restart node activity reporter
+
+- name: Install reporter systemd unit
+  ansible.builtin.template:
+    src: node-activity-reporter.service.j2
+    dest: "/etc/systemd/system/{{ node_activity_reporter_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart node activity reporter
+
+- name: Enable and start node activity reporter
+  ansible.builtin.systemd_service:
+    name: "{{ node_activity_reporter_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true

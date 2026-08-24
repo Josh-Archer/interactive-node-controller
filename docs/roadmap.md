@@ -24,6 +24,10 @@ The project supplies a Go controller, versioned `NodeActivity` CRD, OCI Helm cha
 - CI runs formatting, vet, unit tests, and workflow/manifest validation.
 - No live Kubernetes mutation is part of Phase 1.
 
+Phase 1 implementation and operational details are documented in
+[host-reporter.md](host-reporter.md). The reporter defaults to stdout until the
+Phase 2 CRD and controller establish the live API contract.
+
 ## Release model
 
 PR CI uses least privilege and concurrency cancellation. Tag/manual release will build linux/amd64 and linux/arm64 images, publish an OCI Helm chart, generate SBOM/provenance, and keylessly sign when artifacts exist. The scaffold gates artifact jobs because no implementation artifacts exist yet; a green scaffold run is not a usable release. Consumers pin chart version and image digest through reviewed GitOps changes.

@@ -1,0 +1,9 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart node activity reporter
+  ansible.builtin.systemd_service:
+    name: "{{ node_activity_reporter_service_name }}"
+    state: restarted

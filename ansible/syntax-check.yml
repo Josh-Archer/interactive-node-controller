@@ -1,0 +1,11 @@
+---
+- name: Validate node activity reporter role
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  roles:
+    - role: node_activity_reporter
+      node_activity_reporter_binary_src: /tmp/node-activity-reporter
+  tags:
+    - never
