@@ -31,6 +31,25 @@ Node client or generic resource path.
 See [the host reporter guide](docs/host-reporter.md) for configuration, signal
 semantics, credentials, systemd/Ansible installation, and the Phase 1 runbook.
 
+## Phase 2 control plane
+
+The `NodeActivity` CRD is namespaced. GitOps owns its enrollment
+(`spec.nodeName`); the host reporter has only `patch` permission to its one
+enrolled object's `status` subresource. The controller is the only component
+with Node permissions, and it owns only its configured taint key.
+
+| Host report | Managed taint |
+| --- | --- |
+| `idle` | Remove this controller's taint key |
+| interactive `active` | `PreferNoSchedule` |
+| game `active` | `NoSchedule` |
+| `unknown`, `stale`, or expired heartbeat | `NoSchedule` fail-closed (default) |
+
+The controller never evicts Pods or changes workload specifications in Phase 2.
+It publishes the applied taint and `TaintApplied` condition on `NodeActivity`.
+Install with the Helm chart only through a consumer-owned, version/digest-pinned
+GitOps revision; see [controller operations](docs/controller.md).
+
 ## Development
 
 Go 1.23 or newer is required.
@@ -39,7 +58,10 @@ Go 1.23 or newer is required.
 make fmt
 make verify
 make build-linux-amd64
+make build-controller
+make chart-lint
 ```
 
 `make verify` runs formatting checks, unit tests, vet, and repository contract
-checks. See [docs/roadmap.md](docs/roadmap.md) for later phases.
+checks, including Helm rendering. See [docs/roadmap.md](docs/roadmap.md) for
+later phases.
