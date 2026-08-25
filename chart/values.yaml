@@ -57,3 +57,16 @@ taint:
   failClosedValue: unavailable
   staleAfter: 1m
   failClosed: true
+
+eviction:
+  # Safe default: no Eviction API calls are made until both enabled is true
+  # and audit is false. Candidates are always explicitly label opted-in.
+  enabled: false
+  audit: true
+  protectedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  maxPerReconcile: 1
+  retryBackoff: 30s
+  evictableLabel: interactive-node-controller.io/evictable
