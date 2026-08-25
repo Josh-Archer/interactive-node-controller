@@ -29,6 +29,24 @@ Phase 1 implementation and operational details are documented in
 Phase 2 CRD and controller establish the live API contract. Phase 2 deliberately
 does not evict Pods; that safety boundary remains Phase 3.
 
+## Phase 3 acceptance criteria
+
+- Eviction is audit-only and disabled by default; actual calls require both
+  consumer enablement and explicit `interactive-node-controller.io/evictable:
+  "true"` Pod opt-in.
+- Only active game state with the controller's active `NoSchedule` taint can
+  evict. Stale, unknown, idle, and interactive states never evict.
+- Eviction uses `policy/v1` and preserves PDB and termination-grace behavior;
+  throttles/conflicts are blocked and retried rather than bypassed.
+- DaemonSet, mirror/static, protected namespace, terminating, unmanaged,
+  pinned/required-affinity, local-storage, and PVC-backed RWO-sensitive Pods
+  are skipped with reasoned metrics and status evidence.
+- Evictions have a configurable per-reconcile cap and retry backoff. The
+  controller has no workload-spec mutation or Pod-delete permission.
+- Unit/fake-client tests cover each gate, audit mode, PDB blocks, retries,
+  rate limiting, and unchanged unrelated workload objects. No live consumer
+  cluster is mutated in Phase 3.
+
 ## Release model
 
 PR CI uses least privilege and concurrency cancellation. It validates the Go

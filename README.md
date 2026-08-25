@@ -45,8 +45,12 @@ with Node permissions, and it owns only its configured taint key.
 | game `active` | `NoSchedule` |
 | `unknown`, `stale`, or expired heartbeat | `NoSchedule` fail-closed (default) |
 
-The controller never evicts Pods or changes workload specifications in Phase 2.
-It publishes the applied taint and `TaintApplied` condition on `NodeActivity`.
+The controller never changes workload specifications. Phase 3 adds a disabled,
+audit-only-by-default safe eviction path. Actual evictions require an explicit
+`interactive-node-controller.io/evictable: "true"` Pod label, active game
+state, the managed `NoSchedule` taint, and both consumer opt-in flags. The
+policy/v1 Eviction API is used so PDBs and grace periods are respected; PDB
+blocks are reported and retried. See [controller operations](docs/controller.md).
 Install with the Helm chart only through a consumer-owned, version/digest-pinned
 GitOps revision; see [controller operations](docs/controller.md).
 

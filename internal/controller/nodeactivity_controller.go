@@ -49,8 +49,10 @@ func (p TaintPolicy) Validate() error {
 // It does not create, delete, or mutate Pods or workload specifications.
 type NodeActivityReconciler struct {
 	client.Client
-	Policy TaintPolicy
-	Clock  clock.Clock
+	Policy   TaintPolicy
+	Eviction EvictionPolicy
+	Evictor  EvictionClient
+	Clock    clock.Clock
 }
 
 func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -81,7 +83,30 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 			return ctrl.Result{}, err
 		}
 	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, r.setCondition(ctx, activity, metav1.ConditionTrue, "TaintReconciled", reason, desired)
+	if err := r.setCondition(ctx, activity, metav1.ConditionTrue, "TaintReconciled", reason, desired); err != nil {
+		return ctrl.Result{}, err
+	}
+	evictionSummary, err := r.reconcileEvictions(ctx, activity, node, desired)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.setEvictionCondition(ctx, activity, evictionSummary); err != nil {
+		return ctrl.Result{}, err
+	}
+	result := ctrl.Result{RequeueAfter: requeueAfter}
+	if evictionSummary.requeueAfter > 0 && (result.RequeueAfter <= 0 || evictionSummary.requeueAfter < result.RequeueAfter) {
+		result.RequeueAfter = evictionSummary.requeueAfter
+	}
+	return result, nil
+}
+
+func (r *NodeActivityReconciler) setEvictionCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, summary evictionSummary) error {
+	before := activity.DeepCopy()
+	meta.SetStatusCondition(&activity.Status.Conditions, summary.condition(r.clock().Now(), activity.Generation))
+	if reflect.DeepEqual(before.Status, activity.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, activity, client.MergeFrom(before))
 }
 
 func (r *NodeActivityReconciler) SetupWithManager(manager ctrl.Manager) error {

@@ -38,6 +38,12 @@ spec:
             - --fail-closed-taint-value={{ .Values.taint.failClosedValue }}
             - --stale-after={{ .Values.taint.staleAfter }}
             - --fail-closed={{ .Values.taint.failClosed }}
+            - --eviction-enabled={{ .Values.eviction.enabled }}
+            - --eviction-audit={{ .Values.eviction.audit }}
+            - --eviction-protected-namespaces={{ join "," .Values.eviction.protectedNamespaces }}
+            - --eviction-max-per-reconcile={{ .Values.eviction.maxPerReconcile }}
+            - --eviction-retry-backoff={{ .Values.eviction.retryBackoff }}
+            - --eviction-evictable-label={{ .Values.eviction.evictableLabel }}
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --health-probe-bind-address={{ .Values.healthProbe.bindAddress }}
             - --leader-elect={{ .Values.leaderElection }}
