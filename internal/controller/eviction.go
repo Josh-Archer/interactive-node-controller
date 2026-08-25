@@ -213,8 +213,11 @@ func (r *NodeActivityReconciler) evictionDecision(ctx context.Context, pod *core
 	if pod.Annotations != nil && strings.EqualFold(pod.Annotations[PinnedAnnotation], "true") {
 		return false, "direct-pinned"
 	}
-	if pod.Spec.NodeSelector != nil && pod.Spec.NodeSelector["kubernetes.io/hostname"] == nodeName {
-		return false, "host-pinned-selector"
+	if len(pod.Spec.NodeSelector) > 0 {
+		// A selector may target a scarce capability or a single node. Without
+		// proving scheduler feasibility across the cluster, treat every selector
+		// as ambiguous and leave the Pod in place.
+		return false, "node-selector"
 	}
 	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil && pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
 		return false, "required-node-affinity"

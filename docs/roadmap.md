@@ -39,8 +39,9 @@ does not evict Pods; that safety boundary remains Phase 3.
 - Eviction uses `policy/v1` and preserves PDB and termination-grace behavior;
   throttles/conflicts are blocked and retried rather than bypassed.
 - DaemonSet, mirror/static, protected namespace, terminating, unmanaged,
-  pinned/required-affinity, local-storage, and PVC-backed RWO-sensitive Pods
-  are skipped with reasoned metrics and status evidence.
+  non-empty node-selector, pinned/required-affinity, local-storage, and
+  PVC-backed RWO-sensitive Pods are skipped with reasoned metrics and status
+  evidence.
 - Evictions have a configurable per-reconcile cap and retry backoff. The
   controller has no workload-spec mutation or Pod-delete permission.
 - Unit/fake-client tests cover each gate, audit mode, PDB blocks, retries,

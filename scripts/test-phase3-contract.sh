@@ -20,4 +20,5 @@ grep -q 'enabled: false' chart/values.yaml
 grep -q 'audit: true' chart/values.yaml
 grep -q 'interactive-node-controller.io/evictable' internal/controller/eviction.go
 grep -q 'policy/v1' internal/controller/eviction.go
+grep -q 'node-selector' internal/controller/eviction.go
 echo 'phase 3 safe eviction contract checks passed'

@@ -80,6 +80,7 @@ func TestEvictionSkipsPrimarySafetyClasses(t *testing.T) {
 			p.DeletionTimestamp = &now
 		}, reason: "terminating"},
 		{name: "pinned", mutate: func(p *corev1.Pod) { p.Annotations = map[string]string{PinnedAnnotation: "true"} }, reason: "direct-pinned"},
+		{name: "ambiguous node selector", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector = map[string]string{"accelerator": "special"} }, reason: "node-selector"},
 		{name: "required affinity", mutate: func(p *corev1.Pod) {
 			p.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{}}}
 		}, reason: "required-node-affinity"},

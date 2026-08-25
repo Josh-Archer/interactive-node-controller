@@ -52,8 +52,11 @@ retried; the controller never bypasses a PDB by deleting a Pod. The per-reconcil
 rate cap and retry backoff are configurable.
 
 Safety gates skip and explain DaemonSet-owned, mirror/static, protected
-namespace, terminating, unmanaged, critical-priority, hostPath/emptyDir/local
-storage, PVC-backed RWO, required node-affinity, and explicitly pinned Pods.
+namespace, terminating, unmanaged, critical-priority, any non-empty
+`spec.nodeSelector`, hostPath/emptyDir/local storage, PVC-backed RWO, required
+node-affinity, and explicitly pinned Pods. A node selector can target a scarce
+capability or a single node, so the controller does not attempt a scheduler
+feasibility proof during eviction.
 Skipped and blocked outcomes are exported in
 `interactive_node_controller_evictions_total{outcome,reason}` and summarized
 by the `Eviction` NodeActivity condition. Workload specs are never mutated.
