@@ -48,6 +48,14 @@ does not evict Pods; that safety boundary remains Phase 3.
   rate limiting, and unchanged unrelated workload objects. No live consumer
   cluster is mutated in Phase 3.
 
+## Phase 4 acceptance criteria
+
+- Home pins an immutable release chart and container image digest with environment-specific values.
+- Canary targets only `homelabdesktop` after live node and storage review (e.g. Longhorn replica scheduling disabled).
+- Rollout verifies GitHub workflow, ArgoCD revision, Synced/Healthy state, workload readiness, and external smoke checks.
+- Rollback and stale-agent recovery procedures are documented and tested.
+- No direct kubectl-only deployment path is introduced.
+
 ## Release model
 
 PR CI uses least privilege and concurrency cancellation. It validates the Go
