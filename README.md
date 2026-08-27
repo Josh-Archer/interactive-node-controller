@@ -4,6 +4,11 @@ Generic availability signaling for interactive Kubernetes workers. A host report
 
 This repository owns the Go controller, versioned CRD, OCI Helm chart, host reporter framework/Ansible role, tests, and immutable signed releases. Consuming repositories such as `Josh-Archer/home` own node selection, policy, GitOps pins, and smoke checks. This project never directly deploys to a consumer cluster.
 
+Published releases are available as a GitHub Container Registry image at
+`ghcr.io/josh-archer/interactive-node-controller` and an OCI Helm chart at
+`oci://ghcr.io/josh-archer/charts/interactive-node-controller`. See
+[VERSIONING.md](VERSIONING.md) for the release and consumption contract.
+
 ## Security boundary
 
 The host reporter never patches Kubernetes `Node` objects. It may update only its enrolled `NodeActivity`; only the controller may manage the taint or evict. Workload specifications remain Git/Argo-owned. Stale heartbeats fail closed by default.
