@@ -4,11 +4,10 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
-      publish:
-        description: Publish artifacts after implementation is ready
+      tag:
+        description: Existing release tag to publish (for example v0.1.0)
         required: true
-        default: 'false'
-        type: boolean
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -18,18 +17,29 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 jobs:
-  artifact-gate:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      ready: ${{ steps.detect.outputs.ready }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - id: detect
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+      - id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
-          if test -f Dockerfile && test -f chart/Chart.yaml && test -f chart/crds/availability.interactive-node.io_nodeactivities.yaml; then echo 'ready=true' >> "$GITHUB_OUTPUT"; else echo 'ready=false' >> "$GITHUB_OUTPUT"; echo 'Release gated: implementation artifacts are absent.'; fi
+          test -f Dockerfile
+          test -f chart/Chart.yaml
+          test -f chart/crds/availability.interactive-node.io_nodeactivities.yaml
+          if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "Release tag must be a semantic-version tag such as v0.1.0: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          printf 'tag=%s\nversion=%s\n' "$RELEASE_TAG" "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
   publish-image:
-    needs: artifact-gate
-    if: needs.artifact-gate.outputs.ready == 'true' && (github.event_name == 'push' || inputs.publish == true)
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,6 +47,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -44,19 +56,22 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}
           provenance: mode=max
           sbom: true
       - uses: sigstore/cosign-installer@v3
-      - run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+      - run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+      - name: Publish image digest in the workflow summary
+        run: echo '### Container image' >> "$GITHUB_STEP_SUMMARY" && echo '\`ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}\`' >> "$GITHUB_STEP_SUMMARY"
   publish-chart:
-    needs: artifact-gate
-    if: needs.artifact-gate.outputs.ready == 'true' && (github.event_name == 'push' || inputs.publish == true)
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,9 +79,35 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: azure/setup-helm@v4
-      - run: helm package chart --version "${GITHUB_REF_NAME#v}"
+      - run: helm lint chart && helm package chart --version '${{ needs.prepare.outputs.version }}' --app-version '${{ needs.prepare.outputs.tag }}'
       - run: echo "$CHART_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env:
           CHART_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: helm push interactive-node-controller-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+      - name: Push the chart unless this immutable version already exists
+        run: |
+          if helm show chart oci://ghcr.io/${{ github.repository_owner }}/charts/interactive-node-controller --version '${{ needs.prepare.outputs.version }}' >/dev/null 2>&1; then
+            echo 'Chart version already exists; retaining the immutable published artifact.'
+          else
+            helm push interactive-node-controller-${{ needs.prepare.outputs.version }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          fi
+      - name: Publish chart reference in the workflow summary
+        run: echo '### Helm chart' >> "$GITHUB_STEP_SUMMARY" && echo '\`oci://ghcr.io/${{ github.repository_owner }}/charts/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`' >> "$GITHUB_STEP_SUMMARY"
+  github-release:
+    needs: [prepare, publish-image, publish-chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists."
+          else
+            gh release create "$RELEASE_TAG" --generate-notes --title "$RELEASE_TAG"
+          fi
