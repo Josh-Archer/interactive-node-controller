@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: false
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # OCI repository paths must be lowercase; the GitHub owner is Josh-Archer.
+  IMAGE_NAME: josh-archer/interactive-node-controller
+  CHART_REPOSITORY: oci://ghcr.io/josh-archer/charts
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -69,7 +71,7 @@ jobs:
       - uses: sigstore/cosign-installer@v3
       - run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
       - name: Publish image digest in the workflow summary
-        run: echo '### Container image' >> "$GITHUB_STEP_SUMMARY" && echo '\`ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}\`' >> "$GITHUB_STEP_SUMMARY"
+        run: echo '### Container image' >> "$GITHUB_STEP_SUMMARY" && echo '\`ghcr.io/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`' >> "$GITHUB_STEP_SUMMARY"
   publish-chart:
     needs: prepare
     runs-on: ubuntu-latest
@@ -88,13 +90,13 @@ jobs:
           CHART_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Push the chart unless this immutable version already exists
         run: |
-          if helm show chart oci://ghcr.io/${{ github.repository_owner }}/charts/interactive-node-controller --version '${{ needs.prepare.outputs.version }}' >/dev/null 2>&1; then
+          if helm show chart ${{ env.CHART_REPOSITORY }}/interactive-node-controller --version '${{ needs.prepare.outputs.version }}' >/dev/null 2>&1; then
             echo 'Chart version already exists; retaining the immutable published artifact.'
           else
-            helm push interactive-node-controller-${{ needs.prepare.outputs.version }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+            helm push interactive-node-controller-${{ needs.prepare.outputs.version }}.tgz ${{ env.CHART_REPOSITORY }}
           fi
       - name: Publish chart reference in the workflow summary
-        run: echo '### Helm chart' >> "$GITHUB_STEP_SUMMARY" && echo '\`oci://ghcr.io/${{ github.repository_owner }}/charts/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`' >> "$GITHUB_STEP_SUMMARY"
+        run: echo '### Helm chart' >> "$GITHUB_STEP_SUMMARY" && echo '\`${{ env.CHART_REPOSITORY }}/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`' >> "$GITHUB_STEP_SUMMARY"
   github-release:
     needs: [prepare, publish-image, publish-chart]
     runs-on: ubuntu-latest
