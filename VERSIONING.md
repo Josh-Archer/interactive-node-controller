@@ -22,7 +22,7 @@ Install the chart with:
 ```bash
 helm upgrade --install interactive-node-controller \
   oci://ghcr.io/josh-archer/charts/interactive-node-controller \
-  --version 0.1.0
+  --version <VERSION>
 ```
 
 Private GitHub packages require registry credentials with package-read access
