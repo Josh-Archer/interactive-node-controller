@@ -103,6 +103,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
