@@ -13,6 +13,8 @@ The project supplies a Go controller, versioned `NodeActivity` CRD, OCI Helm cha
 3. Phase 2 controller state machine, CRD, chart — [#3](https://github.com/Josh-Archer/interactive-node-controller/issues/3)
 4. Phase 3 safe opt-in eviction — [#4](https://github.com/Josh-Archer/interactive-node-controller/issues/4)
 5. Phase 4 home canary GitOps integration — [#5](https://github.com/Josh-Archer/interactive-node-controller/issues/5)
+6. Phase 5 public consumer release — [#18](https://github.com/Josh-Archer/interactive-node-controller/issues/18)
+
 
 ## Phase 1 acceptance criteria
 
@@ -56,11 +58,22 @@ does not evict Pods; that safety boundary remains Phase 3.
 - Rollback and stale-agent recovery procedures are documented and tested.
 - No direct kubectl-only deployment path is introduced.
 
+## Phase 5 acceptance criteria
+
+Tracked in [#18](https://github.com/Josh-Archer/interactive-node-controller/issues/18) and [discussion #19](https://github.com/Josh-Archer/interactive-node-controller/discussions/19).
+
+- An OSI-approved license is recorded at the repository root — [#13](https://github.com/Josh-Archer/interactive-node-controller/issues/13).
+- README and examples document Helm + digest pins and reporter status-only RBAC without `Josh-Archer/home` — [#14](https://github.com/Josh-Archer/interactive-node-controller/issues/14).
+- External consumers can verify cosign, SBOM, provenance, and the OCI chart — [#15](https://github.com/Josh-Archer/interactive-node-controller/issues/15).
+- GHCR image and OCI Helm chart are pullable without a GitHub token — [#16](https://github.com/Josh-Archer/interactive-node-controller/issues/16).
+- The GitHub repository is public; this repo still never deploys to a consumer cluster — [#17](https://github.com/Josh-Archer/interactive-node-controller/issues/17).
+
 ## Release model
 
 PR CI uses least privilege and concurrency cancellation. It validates the Go
 controller, chart rendering, and a local container build. Tag/manual release
 builds linux/amd64 and linux/arm64 images, publishes an OCI Helm chart,
 generates SBOM/provenance, and keylessly signs the image. Consumers pin chart
-version and image digest through reviewed GitOps changes; Phase 2 has not
-created or deployed a release to any consumer cluster.
+version and image digest through reviewed GitOps changes. Home currently pins
+`v0.1.1`; Phase 5 makes that pin installable by unauthenticated third parties.
+
