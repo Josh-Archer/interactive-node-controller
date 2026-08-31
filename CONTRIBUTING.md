@@ -7,3 +7,8 @@ to this repository.
 
 Report security issues privately as described in [SECURITY.md](SECURITY.md).
 Releases follow [VERSIONING.md](VERSIONING.md).
+
+## Licensing
+
+All contributions to this repository are provided under the terms of the
+[Apache License, Version 2.0](LICENSE).

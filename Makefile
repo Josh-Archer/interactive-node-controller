@@ -28,6 +28,7 @@ contracts:
 	./scripts/test-phase2-contract.sh
 	./scripts/test-phase3-contract.sh
 	./scripts/test-phase4-contract.sh
+	./scripts/test-phase5-contract.sh
 
 ansible-syntax:
 	ANSIBLE_ROLES_PATH=ansible/roles ansible-playbook --syntax-check ansible/syntax-check.yml

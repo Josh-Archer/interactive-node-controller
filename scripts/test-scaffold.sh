@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+test -s LICENSE
+grep -q 'Apache License' LICENSE
 test -s README.md
 test -s docs/roadmap.md
 test -s Makefile

@@ -74,3 +74,7 @@ make chart-lint
 `make verify` runs formatting checks, unit tests, vet, and repository contract
 checks, including Helm rendering. See [docs/roadmap.md](docs/roadmap.md) for
 later phases.
+
+## License
+
+Interactive Node Controller is licensed under the [Apache License, Version 2.0](LICENSE).
