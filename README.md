@@ -7,7 +7,8 @@ This repository owns the Go controller, versioned CRD, OCI Helm chart, host repo
 Published releases are available as signed container images at
 `ghcr.io/josh-archer/interactive-node-controller` and OCI Helm charts at
 `oci://ghcr.io/josh-archer/charts/interactive-node-controller`. See
-[VERSIONING.md](VERSIONING.md) for the release and consumption contract.
+[VERSIONING.md](VERSIONING.md) for the release contract and
+[docs/artifact-verification.md](docs/artifact-verification.md) for Cosign signature and SBOM verification.
 
 ## Security boundary
 

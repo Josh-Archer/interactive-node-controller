@@ -32,4 +32,20 @@ grep -q 'eviction:' examples/helm-values.yaml
 grep -q 'interactive-node-controller.io/evictable' examples/helm-values.yaml
 grep -q 'availability.interactive-node.io/state' examples/helm-values.yaml
 
+# Phase 5 Step 3 contract checks: Cosign, SBOM, and chart verification runbook
+test -s docs/artifact-verification.md
+grep -q 'cosign verify' docs/artifact-verification.md
+grep -q 'gh attestation verify' docs/artifact-verification.md
+grep -q 'helm pull oci://ghcr.io/josh-archer/charts/interactive-node-controller' docs/artifact-verification.md
+grep -q 'token.actions.githubusercontent.com' docs/artifact-verification.md
+grep -q 'docs/artifact-verification.md' README.md
+grep -q 'docs/artifact-verification.md' VERSIONING.md
+
+# Verify release pipeline security invariants
+grep -q 'cosign sign --yes' .github/workflows/release.yml
+grep -q 'provenance: mode=max' .github/workflows/release.yml
+grep -q 'sbom: true' .github/workflows/release.yml
+grep -q 'helm push' .github/workflows/release.yml
+grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
+
 echo 'phase 5 public release contract checks passed'

@@ -31,3 +31,12 @@ helm upgrade --install interactive-node-controller \
 Published container images and OCI Helm charts are publicly accessible and do
 not require registry authentication to pull. Private forks or custom mirrors
 can configure standard Kubernetes `imagePullSecrets`.
+
+## Artifact Verification
+
+Published release images and OCI Helm charts can be verified before deployment:
+- **Cosign Signature Verification**: Signatures are keyless and rooted in Sigstore Fulcio and Rekor.
+- **Provenance & SBOM Verification**: SLSA provenance and SBOM attestations are attached to each image.
+- **Helm OCI Inspection**: Pull and inspect chart templates and default values without installing.
+
+See the [Artifact Verification Guide](docs/artifact-verification.md) for full commands and verification examples.
