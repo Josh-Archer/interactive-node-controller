@@ -1,6 +1,6 @@
-# Phase 2 will install the NodeActivity CRD. This example is intentionally not
-# directly applicable until then. Replace both example names with the single
-# resource enrolled to this host reporter.
+# Least-privilege RBAC: Allows the host reporter to patch ONLY the status
+# subresource of its own enrolled NodeActivity. Replace resourceNames with the
+# exact enrolled resource name for your worker node.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

@@ -25,14 +25,15 @@ signals:
     utilization_floor_percent: 20
     timeout: 3s
 
-# stdout is the only mode that works without the Phase 2 CRD. Kubernetes mode
-# requires a pre-created NodeActivity and a credential restricted to its status.
+# Reporter destination:
+# - stdout: prints JSON heartbeats to stdout (useful for standalone testing)
+# - kubernetes: patches the status subresource of the enrolled NodeActivity
 reporter:
-  mode: stdout
+  mode: kubernetes
   kubernetes:
-    api_server: https://kubernetes.example.invalid:6443
+    api_server: https://kubernetes.default.svc:443
     namespace: interactive-node-controller
-    name: replace-with-enrolled-resource-name
+    name: workstation-1
     token_file: /var/lib/node-activity-reporter/token
     ca_file: /var/lib/node-activity-reporter/ca.crt
     timeout: 10s

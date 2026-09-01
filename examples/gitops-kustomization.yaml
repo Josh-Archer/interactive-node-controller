@@ -1,0 +1,16 @@
+# Example environment-agnostic GitOps kustomization
+# Consumers reference release manifests or render the OCI Helm chart.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: interactive-node-controller
+
+resources:
+  # 1. CustomResourceDefinition
+  - https://raw.githubusercontent.com/Josh-Archer/interactive-node-controller/main/config/crd/bases/availability.interactive-node.io_nodeactivities.yaml
+  # 2. NodeActivity enrollment for worker node(s)
+  - nodeactivity.yaml
+  # 3. Least-privilege reporter RBAC
+  - nodeactivity-rbac.yaml
+  # 4. Controller deployment (rendered from chart or pinned manifests)
+  # - deployment.yaml

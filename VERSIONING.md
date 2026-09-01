@@ -17,13 +17,17 @@ image:
   digest: sha256:...
 ```
 
-Install the chart with:
+Install the chart from the public OCI registry:
 
 ```bash
 helm upgrade --install interactive-node-controller \
   oci://ghcr.io/josh-archer/charts/interactive-node-controller \
-  --version <VERSION>
+  --version <VERSION> \
+  --namespace interactive-node-controller \
+  --create-namespace \
+  --values examples/helm-values.yaml
 ```
 
-Private GitHub packages require registry credentials with package-read access
-in the consuming environment.
+Published container images and OCI Helm charts are publicly accessible and do
+not require registry authentication to pull. Private forks or custom mirrors
+can configure standard Kubernetes `imagePullSecrets`.
