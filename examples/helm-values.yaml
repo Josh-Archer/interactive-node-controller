@@ -1,0 +1,34 @@
+# Environment-agnostic Helm values example for interactive-node-controller
+image:
+  repository: ghcr.io/josh-archer/interactive-node-controller
+  # Pin by digest in production GitOps for immutable deployments:
+  digest: sha256:40b00ee4215d468c019ebc41d944c630baaf39ffe7364353274d5a44dafa22b5
+
+# Taint configuration
+taint:
+  key: availability.interactive-node.io/state
+  interactiveValue: interactive
+  activeValue: active
+  failClosedValue: unavailable
+  staleAfter: 1m
+  failClosed: true
+
+# Safe opt-in eviction configuration (disabled by default)
+eviction:
+  enabled: false
+  audit: true
+  protectedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  maxPerReconcile: 1
+  retryBackoff: 30s
+  evictableLabel: interactive-node-controller.io/evictable
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi

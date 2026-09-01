@@ -2,10 +2,10 @@
 
 Generic availability signaling for interactive Kubernetes workers. A host reporter updates only its own namespaced `NodeActivity` resource; the cluster controller owns the managed node taint and later safe, opt-in evictions.
 
-This repository owns the Go controller, versioned CRD, OCI Helm chart, host reporter framework/Ansible role, tests, and immutable signed releases. Consuming repositories such as `Josh-Archer/home` own node selection, policy, GitOps pins, and smoke checks. This project never directly deploys to a consumer cluster.
+This repository owns the Go controller, versioned CRD, OCI Helm chart, host reporter framework/Ansible role, tests, and immutable signed releases. Consuming environments own node selection, policy configuration, GitOps pins, and smoke checks. This project produces reusable artifacts and never directly deploys to a consumer cluster.
 
-Published releases are available as a GitHub Container Registry image at
-`ghcr.io/josh-archer/interactive-node-controller` and an OCI Helm chart at
+Published releases are available as signed container images at
+`ghcr.io/josh-archer/interactive-node-controller` and OCI Helm charts at
 `oci://ghcr.io/josh-archer/charts/interactive-node-controller`. See
 [VERSIONING.md](VERSIONING.md) for the release and consumption contract.
 
@@ -18,6 +18,59 @@ The host reporter never patches Kubernetes `Node` objects. It may update only it
 - Replacing a scheduler, autoscaler, or GitOps controller.
 - Mutating workload replicas or implicitly draining every pod.
 - Assuming a desktop, GPU vendor, runtime, or cloud provider.
+
+## Quickstart & Installation
+
+### 1. Install Controller via Helm
+
+Install the controller into your cluster from the public OCI registry, pinning the chart version and image digest:
+
+```bash
+helm upgrade --install interactive-node-controller \
+  oci://ghcr.io/josh-archer/charts/interactive-node-controller \
+  --version 0.1.0 \
+  --namespace interactive-node-controller \
+  --create-namespace \
+  --set image.digest="sha256:40b00ee4215d468c019ebc41d944c630baaf39ffe7364353274d5a44dafa22b5"
+```
+
+Alternatively, customize values using [`examples/helm-values.yaml`](examples/helm-values.yaml) or a GitOps kustomization ([`examples/gitops-kustomization.yaml`](examples/gitops-kustomization.yaml)).
+
+### 2. Enroll an Interactive Worker Node
+
+Apply a `NodeActivity` resource for each interactive workstation or GPU node ([`examples/nodeactivity.yaml`](examples/nodeactivity.yaml)):
+
+```yaml
+apiVersion: availability.interactive-node.io/v1alpha1
+kind: NodeActivity
+metadata:
+  name: workstation-1
+  namespace: interactive-node-controller
+spec:
+  nodeName: workstation-1
+```
+
+### 3. Grant Reporter Status-Only RBAC
+
+Create a ServiceAccount and Role with `patch` permission on `nodeactivities/status` ([`examples/nodeactivity-rbac.yaml`](examples/nodeactivity-rbac.yaml)):
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workstation-1-reporter
+  namespace: interactive-node-controller
+rules:
+  - apiGroups: ["availability.interactive-node.io"]
+    resources: ["nodeactivities/status"]
+    resourceNames: ["workstation-1"]
+    verbs: ["patch"]
+```
+
+### 4. Configure & Start Host Reporter
+
+Install the host reporter on the worker node using the systemd unit or Ansible role, pointing its config ([`examples/config.yaml`](examples/config.yaml)) at the cluster API server and projected token.
+
 
 ## Phase 1 host reporter
 
