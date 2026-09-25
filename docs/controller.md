@@ -13,10 +13,17 @@ unrelated Node taints remain untouched. It does not create, delete, evict, or
 modify Pods, Deployments, StatefulSets, DaemonSets, or any other workload spec.
 
 The controller attaches a finalizer (`availability.interactive-node.io/cleanup`)
-to enrolled `NodeActivity` resources. When a `NodeActivity` is deleted, the
-controller removes its owned taint from the enrolled Node before clearing the
-finalizer. If the enrolled Node has already been deleted or cannot be found, the
-finalizer is removed immediately so deletion cannot be wedged.
+to enrolled `NodeActivity` resources. While the controller is running, when a
+`NodeActivity` is deleted, the controller removes its owned taint from the
+enrolled Node before clearing the finalizer. If the enrolled Node has already
+been deleted or cannot be found, the controller clears the finalizer
+immediately so deletion is not wedged by a missing Node. However, this automatic
+cleanup only occurs while the controller is running; if the controller
+Deployment is deleted or scaled to `replicaCount: 0` before the `NodeActivity`
+resources are deleted, nothing processes the finalizer and deletion will hang.
+In that scenario, manual recovery requires patching the `NodeActivity` to remove
+the `availability.interactive-node.io/cleanup` finalizer (`kubectl patch ...`)
+and removing the owned taint with `kubectl taint nodes <node> <key>-`.
 
 ## State and stale behavior
 
@@ -100,7 +107,17 @@ Deploy the controller via ArgoCD using the published OCI Helm chart:
 ### Rollback and recovery
 
 1. **Stale Agent / Host Offline**: When host reporter heartbeats cease for longer than `staleAfter` (default 1m), the controller enters fail-closed mode and applies `NoSchedule` with value `unavailable`. Normal operations resume automatically upon fresh heartbeat reception.
-2. **Canary Rollback**: To roll back without affecting cluster workloads:
-   - Remove the `NodeActivity` CR for `homelabdesktop`. The controller removes any owned taint upon finalizer cleanup (`availability.interactive-node.io/cleanup`) before releasing the resource; if the Node is already gone, the finalizer is removed immediately so deletion is not wedged.
-   - Or revert the GitOps commit in `home`; ArgoCD will prune the Deployment and CRD.
-   - Alternatively, disable the controller by setting replicaCount to 0 or disabling the chart in `gitops/ops/kustomization.yaml`.
+2. **Canary Rollback and Uninstall**: To roll back or uninstall without wedging deletions or affecting cluster workloads:
+   - **Delete `NodeActivity` CRs first while the controller is running**: Remove the `NodeActivity` CR for `homelabdesktop` (via GitOps or `kubectl delete`). While the controller is running, it removes the owned taint from the Node upon finalizer cleanup (`availability.interactive-node.io/cleanup`) before releasing the resource. If the Node is already gone, the controller clears the finalizer immediately so deletion is not wedged by a missing Node.
+   - **Remove the controller and CRD second**: Once all `NodeActivity` CRs are fully removed, revert the GitOps commit in `home`; ArgoCD will then prune the Deployment, RBAC, and CRD, or disable the chart in `gitops/ops/kustomization.yaml`.
+   - **Avoid premature pruning or replicaCount 0**: If the controller Deployment is pruned or scaled to `replicaCount: 0` before the `NodeActivity` objects are deleted, nothing is running to remove the finalizer; the `NodeActivity` deletion and CRD deletion will hang. Setting `replicaCount: 0` has the exact same wedging effect on deletions as removing the Deployment.
+   - **Manual Recovery**: If the controller is already gone or disabled (`replicaCount: 0`) and `NodeActivity` deletion is hanging on the finalizer:
+     1. Remove the finalizer to unblock CR and CRD deletion:
+        ```bash
+        kubectl patch nodeactivity homelabdesktop -n interactive-node-controller --type=merge -p '{"metadata":{"finalizers":null}}'
+        ```
+     2. Manually remove any leftover owned taint from the node:
+        ```bash
+        kubectl taint nodes homelabdesktop availability.interactive-node.io/state-
+        ```
+        (general form: `kubectl taint nodes <node> <key>-`).
