@@ -48,7 +48,10 @@ func parseUtilization(output string) ([]int, error) {
 			continue
 		}
 		value, err := strconv.Atoi(line)
-		if err != nil || value < 0 || value > 100 {
+		if err != nil {
+			continue
+		}
+		if value < 0 || value > 100 {
 			return nil, fmt.Errorf("invalid NVIDIA utilization %q", line)
 		}
 		values = append(values, value)

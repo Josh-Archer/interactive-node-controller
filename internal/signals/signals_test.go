@@ -125,6 +125,76 @@ func TestNVIDIAParserAndProviderDegradation(t *testing.T) {
 	}
 }
 
+func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    []int
+		wantErr bool
+	}{
+		{"single N/A with integer", "5\nN/A\n", []int{5}, false},
+		{"leading N/A with integer", "N/A\n72\n", []int{72}, false},
+		{"not supported string", "0\n[Not Supported]\n", []int{0}, false},
+		{"multiple non-integers with integer", "N/A\nERR!\n42\n", []int{42}, false},
+		{"all non-integers degrades to error", "N/A\n[N/A]\n", nil, true},
+		{"out of range high", "50\n101\n", nil, true},
+		{"out of range low", "-1\n50\n", nil, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseUtilization(tc.output)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseUtilization(%q) error = %v, wantErr %v", tc.output, err, tc.wantErr)
+			}
+			if !tc.wantErr && !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseUtilization(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+		})
+	}
+
+	idleProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("0\nN/A\n"), nil
+		}),
+	}
+	activity, reason, err := idleProvider.Observe(context.Background())
+	if err != nil || activity != ActivityIdle {
+		t.Fatalf("idleProvider.Observe() = %q, %q, %v", activity, reason, err)
+	}
+
+	obs := []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ := Aggregate(obs)
+	if aggActivity != ActivityIdle {
+		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityIdle)
+	}
+
+	gameProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("85\nN/A\n"), nil
+		}),
+	}
+	activity, reason, err = gameProvider.Observe(context.Background())
+	if err != nil || activity != ActivityGame {
+		t.Fatalf("gameProvider.Observe() = %q, %q, %v", activity, reason, err)
+	}
+
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ = Aggregate(obs)
+	if aggActivity != ActivityGame {
+		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityGame)
+	}
+}
+
 type providerStub struct {
 	name     string
 	activity Activity

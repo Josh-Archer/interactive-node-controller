@@ -70,8 +70,10 @@ unknown rather than idle.
 When enabled, the reporter executes the configured absolute `nvidia-smi` path
 with fixed query arguments. Any GPU at or above the configured threshold is a
 game observation. This is deliberately opt-in because utilization is not
-universally equivalent to a game. Missing tools, timeouts, `N/A`, malformed
-output, or no GPUs degrade to unknown.
+universally equivalent to a game. Non-integer GPU readings (such as `N/A`) are
+tolerated when valid utilization readings are present. Missing tools, timeouts,
+query output with no valid utilization values, or malformed numeric percentages
+degrade to unknown.
 
 ## NodeActivity reporting API
 
