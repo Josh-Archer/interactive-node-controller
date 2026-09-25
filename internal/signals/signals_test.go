@@ -106,7 +106,7 @@ func TestNVIDIAParserAndProviderDegradation(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(values, []int{5, 72}) {
 		t.Fatalf("parseUtilization() = %#v, %v", values, err)
 	}
-	for _, malformed := range []string{"", "N/A", "101"} {
+	for _, malformed := range []string{"", "garbage", "101"} {
 		if _, err := parseUtilization(malformed); err == nil {
 			t.Fatalf("parseUtilization(%q) unexpectedly succeeded", malformed)
 		}
@@ -135,10 +135,17 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		{"single N/A with integer", "5\nN/A\n", []int{5}, false},
 		{"leading N/A with integer", "N/A\n72\n", []int{72}, false},
 		{"not supported string", "0\n[Not Supported]\n", []int{0}, false},
-		{"multiple non-integers with integer", "N/A\nERR!\n42\n", []int{42}, false},
-		{"all non-integers degrades to error", "N/A\n[N/A]\n", nil, true},
+		{"bracketed N/A with integer", "15\n[N/A]\n", []int{15}, false},
+		{"all non-integers N/A single GPU", "N/A\n", nil, false},
+		{"all non-integers [Not Supported] single GPU", "[Not Supported]\n", nil, false},
+		{"all non-integers [N/A] single GPU", "[N/A]\n", nil, false},
+		{"all non-integers multi-GPU", "N/A\n[N/A]\n[Not Supported]\n", nil, false},
+		{"garbage single line degrades to error", "garbage\n", nil, true},
+		{"garbage with integer degrades to error", "N/A\nERR!\n42\n", nil, true},
 		{"out of range high", "50\n101\n", nil, true},
 		{"out of range low", "-1\n50\n", nil, true},
+		{"empty string degrades to error", "", nil, true},
+		{"whitespace degrades to error", "   \n\n  ", nil, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +159,7 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		})
 	}
 
+	// Mixed valid readings with idle result
 	idleProvider := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
 		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
@@ -173,6 +181,7 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityIdle)
 	}
 
+	// Mixed valid readings with game result
 	gameProvider := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
 		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
@@ -192,6 +201,126 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	aggActivity, _ = Aggregate(obs)
 	if aggActivity != ActivityGame {
 		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityGame)
+	}
+
+	// All-N/A single GPU yields neutral idle observation and aggregates with idle providers to idle
+	singleUnavailable := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("N/A\n"), nil
+		}),
+	}
+	activity, reason, err = singleUnavailable.Observe(context.Background())
+	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
+		t.Fatalf("singleUnavailable.Observe() = %q, %q, %v", activity, reason, err)
+	}
+
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ = Aggregate(obs)
+	if aggActivity != ActivityIdle {
+		t.Fatalf("Aggregate() with all-N/A single GPU = %q, want %q", aggActivity, ActivityIdle)
+	}
+
+	// All-unavailable multi-GPU yields neutral idle observation
+	multiUnavailable := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("N/A\n[Not Supported]\n[N/A]\n"), nil
+		}),
+	}
+	activity, reason, err = multiUnavailable.Observe(context.Background())
+	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
+		t.Fatalf("multiUnavailable.Observe() = %q, %q, %v", activity, reason, err)
+	}
+
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ = Aggregate(obs)
+	if aggActivity != ActivityIdle {
+		t.Fatalf("Aggregate() with all-unavailable multi-GPU = %q, want %q", aggActivity, ActivityIdle)
+	}
+
+	// Exec error / non-zero exit degrades to unknown
+	execErrProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return nil, errors.New("command failed: exit status 1")
+		}),
+	}
+	activity, reason, err = execErrProvider.Observe(context.Background())
+	if err == nil || activity != ActivityUnknown {
+		t.Fatalf("execErrProvider.Observe() = %q, %v, want unknown", activity, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: err.Error()},
+	}
+	if agg, _ := Aggregate(obs); agg != ActivityUnknown {
+		t.Fatalf("Aggregate() with exec error = %q, want %q", agg, ActivityUnknown)
+	}
+
+	// Timeout degrades to unknown
+	timeoutProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", Timeout: time.Millisecond,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return nil, context.DeadlineExceeded
+		}),
+	}
+	activity, reason, err = timeoutProvider.Observe(context.Background())
+	if err == nil || activity != ActivityUnknown {
+		t.Fatalf("timeoutProvider.Observe() = %q, %v, want unknown", activity, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: err.Error()},
+	}
+	if agg, _ := Aggregate(obs); agg != ActivityUnknown {
+		t.Fatalf("Aggregate() with timeout = %q, want %q", agg, ActivityUnknown)
+	}
+
+	// Empty output degrades to unknown
+	emptyProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("   \n\n  "), nil
+		}),
+	}
+	activity, reason, err = emptyProvider.Observe(context.Background())
+	if err == nil || activity != ActivityUnknown {
+		t.Fatalf("emptyProvider.Observe() = %q, %v, want unknown", activity, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: err.Error()},
+	}
+	if agg, _ := Aggregate(obs); agg != ActivityUnknown {
+		t.Fatalf("Aggregate() with empty output = %q, want %q", agg, ActivityUnknown)
+	}
+
+	// Garbage output degrades to unknown
+	garbageProvider := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", Timeout: time.Second,
+		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("corrupted_output\n"), nil
+		}),
+	}
+	activity, reason, err = garbageProvider.Observe(context.Background())
+	if err == nil || activity != ActivityUnknown {
+		t.Fatalf("garbageProvider.Observe() = %q, %v, want unknown", activity, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: err.Error()},
+	}
+	if agg, _ := Aggregate(obs); agg != ActivityUnknown {
+		t.Fatalf("Aggregate() with garbage output = %q, want %q", agg, ActivityUnknown)
 	}
 }
 
