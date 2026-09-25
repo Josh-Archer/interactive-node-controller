@@ -28,6 +28,9 @@ func (p NVIDIAProvider) Observe(ctx context.Context) (Activity, string, error) {
 	if err != nil {
 		return ActivityUnknown, "", err
 	}
+	if len(values) == 0 {
+		return ActivityIdle, "gpu utilization unavailable", nil
+	}
 	maximum := 0
 	for _, value := range values {
 		if value > maximum {
@@ -41,10 +44,19 @@ func (p NVIDIAProvider) Observe(ctx context.Context) (Activity, string, error) {
 }
 
 func parseUtilization(output string) ([]int, error) {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil, fmt.Errorf("NVIDIA utilization query returned no values")
+	}
 	var values []int
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+	hasReading := false
+	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "%"))
 		if line == "" {
+			continue
+		}
+		hasReading = true
+		if isUnavailable(line) {
 			continue
 		}
 		value, err := strconv.Atoi(line)
@@ -53,8 +65,17 @@ func parseUtilization(output string) ([]int, error) {
 		}
 		values = append(values, value)
 	}
-	if len(values) == 0 {
+	if !hasReading {
 		return nil, fmt.Errorf("NVIDIA utilization query returned no values")
 	}
 	return values, nil
+}
+
+func isUnavailable(reading string) bool {
+	switch strings.ToLower(strings.TrimSpace(reading)) {
+	case "n/a", "[n/a]", "[not supported]":
+		return true
+	default:
+		return false
+	}
 }

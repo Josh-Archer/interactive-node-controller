@@ -70,8 +70,13 @@ unknown rather than idle.
 When enabled, the reporter executes the configured absolute `nvidia-smi` path
 with fixed query arguments. Any GPU at or above the configured threshold is a
 game observation. This is deliberately opt-in because utilization is not
-universally equivalent to a game. Missing tools, timeouts, `N/A`, malformed
-output, or no GPUs degrade to unknown.
+universally equivalent to a game. When `nvidia-smi` executes successfully but
+every GPU reports a non-numeric unavailable reading (such as `N/A`, `[N/A]`, or
+`[Not Supported]`), the provider reports an idle observation with reason
+`gpu utilization unavailable` rather than forcing an unknown fail-closed state.
+Unavailable readings are also tolerated when valid numeric utilization readings
+are present on other GPUs. Missing tools, non-zero command exits, timeouts, empty
+query output, and garbage or out-of-range values degrade to unknown.
 
 ## NodeActivity reporting API
 
