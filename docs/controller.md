@@ -35,7 +35,10 @@ desktop state applies `PreferNoSchedule`; active game state applies
 
 The controller records a `TaintApplied` condition and `status.managedTaint`.
 The condition makes malformed enrollment, missing Nodes, and applied policy
-observable without inspecting the Node manually.
+observable without inspecting the Node manually. Current activity state and
+managed taints are exported as Prometheus metrics
+`interactive_node_controller_activity{node,state,activity}` and
+`interactive_node_controller_taint{node,key,value,effect}`.
 
 ## Install boundary
 
@@ -102,7 +105,7 @@ Deploy the controller via ArgoCD using the published OCI Helm chart:
 2. The `interactive-node-controller` Deployment transitions to `Ready` with 1/1 replicas.
 3. The `NodeActivity` resource for `homelabdesktop` is created in namespace `interactive-node-controller`.
 4. The host reporter sends heartbeats; the controller updates `status.managedTaint` and applies/removes the node taint.
-5. Prometheus metrics endpoint `:8080/metrics` exports activity and taint metrics.
+5. Prometheus metrics endpoint `:8080/metrics` exports activity and taint metrics (`interactive_node_controller_activity` and `interactive_node_controller_taint`).
 
 ### Rollback and recovery
 

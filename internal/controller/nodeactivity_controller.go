@@ -78,6 +78,7 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 				return ctrl.Result{}, err
 			}
 		}
+		clearNodeMetrics(activity.Spec.NodeName)
 		return ctrl.Result{}, nil
 	}
 
@@ -97,6 +98,7 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
+			clearNodeMetrics(activity.Spec.NodeName)
 			return ctrl.Result{RequeueAfter: requeueAfter}, r.setCondition(ctx, activity, metav1.ConditionFalse, "NodeNotFound", "enrolled node does not exist", desired)
 		}
 		return ctrl.Result{}, err
@@ -111,6 +113,7 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.setCondition(ctx, activity, metav1.ConditionTrue, "TaintReconciled", reason, desired); err != nil {
 		return ctrl.Result{}, err
 	}
+	observeActivityAndTaint(activity.Spec.NodeName, activity.Status.State, activity.Status.Activity, desired)
 	evictionSummary, err := r.reconcileEvictions(ctx, activity, node, desired)
 	if err != nil {
 		return ctrl.Result{}, err
