@@ -12,6 +12,12 @@ configured taint key. It removes and replaces only taints matching that key;
 unrelated Node taints remain untouched. It does not create, delete, evict, or
 modify Pods, Deployments, StatefulSets, DaemonSets, or any other workload spec.
 
+The controller attaches a finalizer (`availability.interactive-node.io/cleanup`)
+to enrolled `NodeActivity` resources. When a `NodeActivity` is deleted, the
+controller removes its owned taint from the enrolled Node before clearing the
+finalizer. If the enrolled Node has already been deleted or cannot be found, the
+finalizer is removed immediately so deletion cannot be wedged.
+
 ## State and stale behavior
 
 The chart defaults to a one-minute heartbeat deadline and `failClosed: true`.
@@ -95,6 +101,6 @@ Deploy the controller via ArgoCD using the published OCI Helm chart:
 
 1. **Stale Agent / Host Offline**: When host reporter heartbeats cease for longer than `staleAfter` (default 1m), the controller enters fail-closed mode and applies `NoSchedule` with value `unavailable`. Normal operations resume automatically upon fresh heartbeat reception.
 2. **Canary Rollback**: To roll back without affecting cluster workloads:
-   - Remove the `NodeActivity` CR for `homelabdesktop`. The controller removes any owned taint upon finalizer/cleanup.
+   - Remove the `NodeActivity` CR for `homelabdesktop`. The controller removes any owned taint upon finalizer cleanup (`availability.interactive-node.io/cleanup`) before releasing the resource; if the Node is already gone, the finalizer is removed immediately so deletion is not wedged.
    - Or revert the GitOps commit in `home`; ArgoCD will prune the Deployment and CRD.
    - Alternatively, disable the controller by setting replicaCount to 0 or disabling the chart in `gitops/ops/kustomization.yaml`.
