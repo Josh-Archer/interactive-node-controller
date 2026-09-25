@@ -5,7 +5,7 @@ metadata:
 rules:
   - apiGroups: [availability.interactive-node.io]
     resources: [nodeactivities]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, update, patch]
   - apiGroups: [availability.interactive-node.io]
     resources: [nodeactivities/status]
     verbs: [get, patch, update]

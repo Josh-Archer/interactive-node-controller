@@ -17,9 +17,13 @@ import (
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-const TaintAppliedCondition = "TaintApplied"
+const (
+	TaintAppliedCondition = "TaintApplied"
+	NodeActivityFinalizer = "availability.interactive-node.io/cleanup"
+)
 
 // TaintPolicy is deliberately small: one controller instance owns one taint
 // key. It never alters unrelated taints or workload objects.
@@ -63,8 +67,29 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.Policy.Validate(); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	if !activity.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(activity, NodeActivityFinalizer) {
+			if err := r.finalize(ctx, activity); err != nil {
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(activity, NodeActivityFinalizer)
+			if err := r.Update(ctx, activity); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
 	if strings.TrimSpace(activity.Spec.NodeName) == "" {
 		return ctrl.Result{}, r.setCondition(ctx, activity, metav1.ConditionFalse, "InvalidEnrollment", "spec.nodeName is required", nil)
+	}
+
+	if !controllerutil.ContainsFinalizer(activity, NodeActivityFinalizer) {
+		controllerutil.AddFinalizer(activity, NodeActivityFinalizer)
+		if err := r.Update(ctx, activity); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	now := r.clock().Now()
@@ -107,6 +132,27 @@ func (r *NodeActivityReconciler) setEvictionCondition(ctx context.Context, activ
 		return nil
 	}
 	return r.Status().Patch(ctx, activity, client.MergeFrom(before))
+}
+
+func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availabilityv1alpha1.NodeActivity) error {
+	nodeName := strings.TrimSpace(activity.Spec.NodeName)
+	if nodeName == "" {
+		return nil
+	}
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	changed := reconcileOwnedTaint(node, r.Policy.Key, nil)
+	if changed {
+		if err := r.Update(ctx, node); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *NodeActivityReconciler) SetupWithManager(manager ctrl.Manager) error {
