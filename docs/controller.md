@@ -67,6 +67,14 @@ The controller uses the Kubernetes `policy/v1` Eviction API. PDB throttling
 retried; the controller never bypasses a PDB by deleting a Pod. The per-reconcile
 rate cap and retry backoff are configurable.
 
+Blocked attempts retain a per-node, per-Pod-UID retry deadline. Heartbeat and
+status events continue to reconcile taints, but cannot retry eviction before
+that deadline. Safety gates run again when the deadline expires. Disappeared,
+replaced, or ineligible Pods and inactive node states clear their retry entries;
+expired entries are pruned on subsequent eviction passes. Deadlines are
+process-local: after a restart or leader switch, an eligible Pod may be tried
+immediately, still using the Eviction API and all safety gates.
+
 Safety gates skip and explain DaemonSet-owned, mirror/static, protected
 namespace, terminating, unmanaged, critical-priority, any non-empty
 `spec.nodeSelector`, hostPath/emptyDir/local storage, PVC-backed RWO, required
