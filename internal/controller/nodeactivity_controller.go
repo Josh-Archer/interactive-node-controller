@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
 const (
@@ -79,7 +80,6 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 				return ctrl.Result{}, err
 			}
 		}
-		clearNodeMetrics(activity.Spec.NodeName)
 		return ctrl.Result{}, nil
 	}
 
@@ -95,7 +95,11 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	}
 
 	now := r.clock().Now()
-	desired, reason, requeueAfter := r.desiredTaint(activity, now)
+	protection, err := r.protectionForNode(ctx, activity.Spec.NodeName, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	desired, reason, requeueAfter := protection.taint, protection.reason, protection.requeueAfter
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -111,13 +115,22 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 			return ctrl.Result{}, err
 		}
 	}
-	if err := r.setCondition(ctx, activity, metav1.ConditionTrue, "TaintReconciled", reason, desired); err != nil {
+	conditionStatus, conditionReason := metav1.ConditionTrue, "TaintReconciled"
+	if protection.count > 1 {
+		conditionStatus, conditionReason = metav1.ConditionFalse, "DuplicateEnrollment"
+	}
+	if err := r.setCondition(ctx, activity, conditionStatus, conditionReason, reason, desired); err != nil {
 		return ctrl.Result{}, err
 	}
-	observeActivityAndTaint(activity.Spec.NodeName, activity.Status.State, activity.Status.Activity, desired)
-	evictionSummary, err := r.reconcileEvictions(ctx, activity, node, desired)
-	if err != nil {
-		return ctrl.Result{}, err
+	if protection.source != nil {
+		observeActivityAndTaint(activity.Spec.NodeName, protection.source.Status.State, protection.source.Status.Activity, desired)
+	}
+	evictionSummary := evictionSummary{}
+	if protection.count == 1 {
+		evictionSummary, err = r.reconcileEvictions(ctx, activity, node, desired)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.setEvictionCondition(ctx, activity, evictionSummary); err != nil {
 		return ctrl.Result{}, err
@@ -146,15 +159,25 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
+			clearNodeMetrics(nodeName)
 			return nil
 		}
 		return err
 	}
-	changed := reconcileOwnedTaint(node, r.Policy.Key, nil)
+	protection, err := r.protectionForNode(ctx, nodeName, r.clock().Now())
+	if err != nil {
+		return err
+	}
+	changed := reconcileOwnedTaint(node, r.Policy.Key, protection.taint)
 	if changed {
 		if err := r.Update(ctx, node); err != nil {
 			return err
 		}
+	}
+	if protection.source == nil {
+		clearNodeMetrics(nodeName)
+	} else {
+		observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint)
 	}
 	return nil
 }
@@ -162,6 +185,7 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 func (r *NodeActivityReconciler) SetupWithManager(manager ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(manager).
 		For(&availabilityv1alpha1.NodeActivity{}).
+		Watches(&availabilityv1alpha1.NodeActivity{}, handler.EnqueueRequestsFromMapFunc(r.requestsForNode)).
 		Complete(r)
 }
 

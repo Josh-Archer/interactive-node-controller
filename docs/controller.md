@@ -12,10 +12,24 @@ configured taint key. It removes and replaces only taints matching that key;
 unrelated Node taints remain untouched. It does not create, delete, evict, or
 modify Pods, Deployments, StatefulSets, DaemonSets, or any other workload spec.
 
+Keep exactly one live `NodeActivity` enrollment per Node. If multiple objects
+across any namespaces target the same Node, the controller conservatively
+aggregates their contributions: fresh active-game `NoSchedule` wins, followed
+by fail-closed `NoSchedule`, interactive `PreferNoSchedule`, and idle/no taint.
+Unknown/stale reports contribute the configured fail-closed policy. Equal
+contributions are ordered by namespace/name for deterministic per-node metrics.
+The earliest contribution deadline schedules reevaluation. Every duplicate
+reports `TaintApplied=False` with reason `DuplicateEnrollment`; remove duplicates
+to restore a single enrollment. Eviction is suppressed while enrollment is
+ambiguous, even if one reporter claims an active game. Changes or deletion of
+an enrollment enqueue its siblings so their conditions refresh promptly.
+
 The controller attaches a finalizer (`availability.interactive-node.io/cleanup`)
 to enrolled `NodeActivity` resources. While the controller is running, when a
 `NodeActivity` is deleted, the controller removes its owned taint from the
-enrolled Node before clearing the finalizer. If the enrolled Node has already
+enrolled Node before clearing the finalizer if no live enrollment remains.
+If another enrollment survives, it recomputes protection from the survivors
+and preserves their per-node metrics instead. If the enrolled Node has already
 been deleted or cannot be found, the controller clears the finalizer
 immediately so deletion is not wedged by a missing Node. However, this automatic
 cleanup only occurs while the controller is running; if the controller
