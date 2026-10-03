@@ -17,14 +17,16 @@ import (
 )
 
 type recordingEvictor struct {
-	names []types.NamespacedName
-	grace []*int64
-	err   error
+	names   []types.NamespacedName
+	grace   []*int64
+	options []metav1.DeleteOptions
+	err     error
 }
 
 func (e *recordingEvictor) Evict(_ context.Context, namespace, name string, options metav1.DeleteOptions) error {
 	e.names = append(e.names, types.NamespacedName{Namespace: namespace, Name: name})
 	e.grace = append(e.grace, options.GracePeriodSeconds)
+	e.options = append(e.options, options)
 	return e.err
 }
 
@@ -165,6 +167,34 @@ func TestKubernetesEvictionClientUsesPolicyAPI(t *testing.T) {
 	_ = policyv1.Eviction{}
 }
 
+func TestEvictionUsesInspectedPodPreconditions(t *testing.T) {
+	pod := eligiblePod("candidate")
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{pod})
+	if _, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0]); err != nil {
+		t.Fatal(err)
+	}
+	if len(evictor.options) != 1 {
+		t.Fatalf("options = %#v", evictor.options)
+	}
+	preconditions := evictor.options[0].Preconditions
+	if preconditions == nil || preconditions.UID == nil || *preconditions.UID != pod.UID || preconditions.ResourceVersion == nil || *preconditions.ResourceVersion != pod.ResourceVersion {
+		t.Fatalf("preconditions = %#v; want UID %q and version %q", preconditions, pod.UID, pod.ResourceVersion)
+	}
+}
+
+func TestEvictionSkipsMissingIdentity(t *testing.T) {
+	pod := eligiblePod("candidate")
+	pod.UID = ""
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{pod})
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evictor.names) != 0 || summary.attempted != 0 || summary.skipped != 1 {
+		t.Fatalf("summary=%#v attempts=%d", summary, len(evictor.names))
+	}
+}
+
 func TestEvictionDoesNotMutateDeploymentSpec(t *testing.T) {
 	replicas := int32(3)
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "workloads"}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}}
@@ -187,7 +217,7 @@ func eligiblePod(name string) *corev1.Pod {
 }
 
 func eligiblePodWithLabels(name string, labels map[string]string) *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "workloads", Labels: labels, OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "app"}}}, Spec: corev1.PodSpec{NodeName: "desktop", TerminationGracePeriodSeconds: ptr(int64(20))}}
+	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "workloads", UID: types.UID(name + "-uid"), ResourceVersion: "1", Labels: labels, OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "app"}}}, Spec: corev1.PodSpec{NodeName: "desktop", TerminationGracePeriodSeconds: ptr(int64(20))}}
 }
 
 func evictionFixture(t *testing.T, state availabilityv1alpha1.State, activityType availabilityv1alpha1.Activity, effect corev1.TaintEffect, pods []*corev1.Pod, extras ...runtime.Object) (*NodeActivityReconciler, *availabilityv1alpha1.NodeActivity, *corev1.Node, *recordingEvictor) {
