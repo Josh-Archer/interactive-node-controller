@@ -69,6 +69,7 @@ func TestEvictionRetryStateChangesAndReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	replacement := eligiblePod("blocked")
+	replacement.ResourceVersion = "" // Create assigns a new resource version.
 	replacement.UID = types.UID("replacement")
 	if err := r.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
