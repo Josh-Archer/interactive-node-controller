@@ -153,9 +153,17 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			observeEviction(evictionOutcomeSkipped, "rate-limited")
 			continue
 		}
+		// Bind the request to the exact object that passed the safety gates.
+		// A same-name replacement or metadata change must be re-evaluated.
+		uid, resourceVersion := pod.UID, pod.ResourceVersion
+		if uid == "" || resourceVersion == "" {
+			summary.skipped++
+			observeEviction(evictionOutcomeSkipped, "missing-pod-identity")
+			continue
+		}
 		summary.attempted++
 		observeEviction(evictionOutcomeAttempted, "eligible")
-		options := metav1.DeleteOptions{}
+		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}}
 		if pod.Spec.TerminationGracePeriodSeconds != nil {
 			grace := *pod.Spec.TerminationGracePeriodSeconds
 			options.GracePeriodSeconds = &grace

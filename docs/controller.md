@@ -62,7 +62,12 @@ Evictions run only while the enrolled activity is `active` with `game`
 activity and the controller's managed taint is `NoSchedule` with the active
 value. Stale, unknown, idle, and interactive states never trigger eviction.
 
-The controller uses the Kubernetes `policy/v1` Eviction API. PDB throttling
+The controller uses the Kubernetes `policy/v1` Eviction API.
+Eviction requests include the inspected Pod's UID and resource version as
+preconditions. A replacement or changed Pod is blocked and must pass the
+safety gates again; missing identity metadata never permits an eviction.
+
+PDB throttling
 (`429 TooManyRequests`) and other API conflicts are recorded as blocked and
 retried; the controller never bypasses a PDB by deleting a Pod. The per-reconcile
 rate cap and retry backoff are configurable.
