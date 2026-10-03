@@ -57,6 +57,7 @@ type NodeActivityReconciler struct {
 	Eviction EvictionPolicy
 	Evictor  EvictionClient
 	Clock    clock.Clock
+	retries  evictionRetries
 }
 
 func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {

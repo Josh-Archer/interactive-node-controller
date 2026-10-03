@@ -121,10 +121,13 @@ func (s evictionSummary) condition(now time.Time, generation int64) metav1.Condi
 func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, node *corev1.Node, desired *corev1.Taint) (evictionSummary, error) {
 	policy := r.Eviction.normalized()
 	summary := evictionSummary{}
+	now := r.clock().Now()
 	if !policy.Enabled && !policy.Audit {
+		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
 	if activity.Status.State != availabilityv1alpha1.StateActive || activity.Status.Activity != availabilityv1alpha1.ActivityGame || !hasTaint(node, r.Policy.Key, r.Policy.ActiveValue, corev1.TaintEffectNoSchedule) || desired == nil || desired.Effect != corev1.TaintEffectNoSchedule || desired.Value != r.Policy.ActiveValue {
+		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
 
@@ -132,20 +135,30 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 	if err := r.List(ctx, pods); err != nil {
 		return summary, err
 	}
+	r.retries.prune(now, node.Name, pods.Items)
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Spec.NodeName != node.Name {
 			continue
 		}
 		decision, reason := r.evictionDecision(ctx, pod, node.Name, policy)
+		key := retryKey(node.Name, pod)
 		if !decision {
+			r.retries.forget(key)
 			summary.skipped++
 			observeEviction(evictionOutcomeSkipped, reason)
 			continue
 		}
 		if policy.Audit || !policy.Enabled || r.Evictor == nil {
+			r.retries.forget(key)
 			summary.audited++
 			observeEviction(evictionOutcomeAudited, "audit")
+			continue
+		}
+		if remaining := r.retries.remaining(key, now); remaining > 0 {
+			summary.blocked++
+			summary.message = "eviction retry backoff is pending"
+			summary.retryAfter(remaining)
 			continue
 		}
 		if summary.attempted >= policy.MaxPerReconcile {
@@ -180,10 +193,12 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			}
 			observeEviction(evictionOutcomeBlocked, reason)
 			summary.message = fmt.Sprintf("eviction blocked for %s/%s (%s); retrying", pod.Namespace, pod.Name, reason)
-			summary.requeueAfter = policy.RetryBackoff
+			r.retries.block(key, r.clock().Now().Add(policy.RetryBackoff))
+			summary.retryAfter(policy.RetryBackoff)
 			continue
 		}
 		summary.evicted++
+		r.retries.forget(key)
 		observeEviction(evictionOutcomeEvicted, "accepted")
 		summary.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d", summary.evicted, summary.skipped)
 	}
