@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -212,6 +214,40 @@ func TestEvictionDoesNotMutateDeploymentSpec(t *testing.T) {
 	}
 }
 
+func TestEvictionAllowsLossyPodsWithEmptyDirAndAffinity(t *testing.T) {
+	runner1 := eligiblePodWithLabels("runner-1", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	runner1.Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	runner1.Spec.Affinity = &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchExpressions: []corev1.NodeSelectorRequirement{{
+						Key:      "kubernetes.io/hostname",
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{"desktop"},
+					}},
+				}},
+			},
+		},
+	}
+
+	runner2 := runner1.DeepCopy()
+	runner2.Name = "runner-2"
+	runner2.UID = types.UID("runner-2-uid")
+
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{runner1, runner2})
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 2 || len(evictor.names) != 2 {
+		t.Fatalf("expected 2 lossy evictions in single pass, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}
+
 func eligiblePod(name string) *corev1.Pod {
 	return eligiblePodWithLabels(name, map[string]string{EvictableLabel: "true"})
 }
@@ -242,7 +278,145 @@ func evictionFixture(t *testing.T, state availabilityv1alpha1.State, activityTyp
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithRuntimeObjects(objects...).Build()
 	evictor := &recordingEvictor{}
-	return &NodeActivityReconciler{Client: client, Policy: testPolicy(), Eviction: EvictionPolicy{Enabled: true, Audit: false, ProtectedNamespaces: map[string]struct{}{"kube-system": {}}, MaxPerReconcile: 1, RetryBackoff: time.Second}, Evictor: evictor}, activity, node, evictor
+	return &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy(), Eviction: EvictionPolicy{Enabled: true, Audit: false, ProtectedNamespaces: map[string]struct{}{"kube-system": {}}, MaxPerReconcile: 1, RetryBackoff: time.Second}, Evictor: evictor}, activity, node, evictor
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestEvictionLossyAnnotationOptIn(t *testing.T) {
+	runner := eligiblePod("runner-annotation")
+	runner.Annotations = map[string]string{AllowLossyEvictionAnnotation: "true"}
+	runner.Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	runner.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "desktop"}
+
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{runner})
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 1 || len(evictor.names) != 1 || evictor.names[0].Name != "runner-annotation" {
+		t.Fatalf("expected 1 lossy eviction via annotation, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}
+
+func TestEvictionLossyHeartbeatExpiry(t *testing.T) {
+	runner := eligiblePodWithLabels("runner-lossy", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	runner.Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+
+	normalPod := eligiblePod("normal-pod")
+
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, corev1.TaintEffectNoSchedule, []*corev1.Pod{runner, normalPod})
+	// Fail-closed taint on node
+	node.Spec.Taints[0].Value = testPolicy().FailClosedValue
+	desired := &corev1.Taint{Key: testPolicy().Key, Value: testPolicy().FailClosedValue, Effect: corev1.TaintEffectNoSchedule}
+
+	// Expire heartbeat by advancing clock beyond StaleAfter
+	r.Clock = clocktesting.NewFakeClock(now.Add(2 * testPolicy().StaleAfter))
+
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 1 || len(evictor.names) != 1 || evictor.names[0].Name != "runner-lossy" {
+		t.Fatalf("expected only lossy pod evicted on stale heartbeat, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}
+
+func TestEvictionLossyReporterUnknownDebounceDoesNotEvict(t *testing.T) {
+	runner := eligiblePodWithLabels("runner-lossy", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	runner.Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateUnknown, availabilityv1alpha1.ActivityUnknown, corev1.TaintEffectNoSchedule, []*corev1.Pod{runner})
+	// Heartbeat is fresh, node has failClosed taint
+	node.Spec.Taints[0].Value = testPolicy().FailClosedValue
+	desired := &corev1.Taint{Key: testPolicy().Key, Value: testPolicy().FailClosedValue, Effect: corev1.TaintEffectNoSchedule}
+
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 0 || len(evictor.names) != 0 {
+		t.Fatalf("expected 0 evictions during fresh unknown debounce, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}
+
+func TestEvictionLossyHardSafetyChecksFailClosed(t *testing.T) {
+	hostPathPod := eligiblePodWithLabels("runner-hostpath", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	hostPathPod.Spec.Volumes = []corev1.Volume{{Name: "hp", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/run"}}}}
+
+	rwoPod := eligiblePodWithLabels("runner-rwo", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	rwoPod.Spec.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "rwo-pvc"}}}}
+
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "rwo-pvc", Namespace: "workloads"},
+		Spec:       corev1.PersistentVolumeClaimSpec{VolumeName: "rwo-pv", AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}},
+	}
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "rwo-pv"},
+		Spec:       corev1.PersistentVolumeSpec{},
+	}
+
+	daemonPod := eligiblePodWithLabels("runner-daemon", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	daemonPod.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "ds"}}
+
+	pinnedPod := eligiblePodWithLabels("runner-pinned", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	pinnedPod.Annotations = map[string]string{PinnedAnnotation: "true"}
+
+	unlabeledPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "runner-no-evictable", Namespace: "workloads", UID: "no-evict-uid", ResourceVersion: "1", Labels: map[string]string{AllowLossyEvictionLabel: "true"}, OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "app"}}},
+		Spec:       corev1.PodSpec{NodeName: "desktop"},
+	}
+
+	pods := []*corev1.Pod{hostPathPod, rwoPod, daemonPod, pinnedPod, unlabeledPod}
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, pods, pvc, pv)
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 0 || len(evictor.names) != 0 {
+		t.Fatalf("expected 0 evictions for lossy pods failing hard safety gates, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}
+
+func TestEvictionDecoupledLossyBurstBudget(t *testing.T) {
+	normalPod := eligiblePod("normal-pod")
+
+	runners := make([]*corev1.Pod, 4)
+	for i := 0; i < 4; i++ {
+		runners[i] = eligiblePodWithLabels(fmt.Sprintf("runner-%d", i+1), map[string]string{
+			EvictableLabel:          "true",
+			AllowLossyEvictionLabel: "true",
+		})
+		runners[i].Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	}
+
+	allPods := append([]*corev1.Pod{normalPod}, runners...)
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, allPods)
+	// policy.MaxPerReconcile is 1 (normal pods cap at 1, lossy pods cap at 4)
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 5 || len(evictor.names) != 5 {
+		t.Fatalf("expected 5 evictions (1 normal + 4 lossy) in single pass with MaxPerReconcile=1, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+}

@@ -26,13 +26,16 @@ func TestMetricsObserveAndTransitions(t *testing.T) {
 
 	// 1. Initial observation: active game
 	gameTaint := &corev1.Taint{Key: key, Value: "active", Effect: corev1.TaintEffectNoSchedule}
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, gameTaint)
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, gameTaint, true)
 
 	if got := testutil.ToFloat64(activityMetric.WithLabelValues(nodeName, "active", "game")); got != 1 {
 		t.Fatalf("expected activityMetric to be 1, got %v", got)
 	}
 	if got := testutil.ToFloat64(taintMetric.WithLabelValues(nodeName, key, "active", string(corev1.TaintEffectNoSchedule))); got != 1 {
 		t.Fatalf("expected taintMetric to be 1, got %v", got)
+	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 0 {
+		t.Fatalf("expected schedulableMetric to be 0 for active game, got %v", got)
 	}
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
 		t.Fatalf("expected 1 activity series, got %d", count)
@@ -43,13 +46,16 @@ func TestMetricsObserveAndTransitions(t *testing.T) {
 
 	// 2. Transition to interactive desktop
 	interactiveTaint := &corev1.Taint{Key: key, Value: "interactive", Effect: corev1.TaintEffectPreferNoSchedule}
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityInteractive, interactiveTaint)
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityInteractive, interactiveTaint, true)
 
 	if got := testutil.ToFloat64(activityMetric.WithLabelValues(nodeName, "active", "interactive")); got != 1 {
 		t.Fatalf("expected interactive activityMetric to be 1, got %v", got)
 	}
 	if got := testutil.ToFloat64(taintMetric.WithLabelValues(nodeName, key, "interactive", string(corev1.TaintEffectPreferNoSchedule))); got != 1 {
 		t.Fatalf("expected interactive taintMetric to be 1, got %v", got)
+	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 0 {
+		t.Fatalf("expected schedulableMetric to be 0 for interactive, got %v", got)
 	}
 	// Old series should have been deleted
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
@@ -59,11 +65,14 @@ func TestMetricsObserveAndTransitions(t *testing.T) {
 		t.Fatalf("expected exactly 1 taint series after transition, got %d", count)
 	}
 
-	// 3. Transition to idle (desired taint is nil)
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil)
+	// 3. Transition to idle with fresh heartbeat (desired taint is nil)
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil, true)
 
 	if got := testutil.ToFloat64(activityMetric.WithLabelValues(nodeName, "idle", "idle")); got != 1 {
 		t.Fatalf("expected idle activityMetric to be 1, got %v", got)
+	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 1 {
+		t.Fatalf("expected schedulableMetric to be 1 for fresh idle, got %v", got)
 	}
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
 		t.Fatalf("expected exactly 1 activity series after idle transition, got %d", count)
@@ -74,23 +83,35 @@ func TestMetricsObserveAndTransitions(t *testing.T) {
 	}
 
 	// 4. Repeated idle observe is idempotent
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil)
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil, true)
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
 		t.Fatalf("expected exactly 1 activity series on repeated idle, got %d", count)
 	}
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected 0 taint series on repeated idle, got %d", count)
 	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 1 {
+		t.Fatalf("expected schedulableMetric to remain 1 on repeated fresh idle, got %v", got)
+	}
+
+	// 4b. Idle with stale heartbeat -> schedulable must be 0
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil, false)
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 0 {
+		t.Fatalf("expected schedulableMetric to be 0 for stale idle, got %v", got)
+	}
 
 	// 5. Fail-closed unavailable taint
 	failClosedTaint := &corev1.Taint{Key: key, Value: "unavailable", Effect: corev1.TaintEffectNoSchedule}
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateStale, availabilityv1alpha1.ActivityUnknown, failClosedTaint)
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateStale, availabilityv1alpha1.ActivityUnknown, failClosedTaint, false)
 
 	if got := testutil.ToFloat64(activityMetric.WithLabelValues(nodeName, "stale", "unknown")); got != 1 {
 		t.Fatalf("expected stale activityMetric to be 1, got %v", got)
 	}
 	if got := testutil.ToFloat64(taintMetric.WithLabelValues(nodeName, key, "unavailable", string(corev1.TaintEffectNoSchedule))); got != 1 {
 		t.Fatalf("expected unavailable taintMetric to be 1, got %v", got)
+	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 0 {
+		t.Fatalf("expected schedulableMetric to be 0 for stale/unavailable, got %v", got)
 	}
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
 		t.Fatalf("expected 1 activity series, got %d", count)
@@ -107,6 +128,9 @@ func TestMetricsObserveAndTransitions(t *testing.T) {
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected 0 taint series after clearNodeMetrics, got %d", count)
 	}
+	if count := testutil.CollectAndCount(schedulableMetric); count != 0 {
+		t.Fatalf("expected 0 schedulable series after clearNodeMetrics, got %d", count)
+	}
 }
 
 func TestMetricsEdgeCases(t *testing.T) {
@@ -114,8 +138,8 @@ func TestMetricsEdgeCases(t *testing.T) {
 	defer resetMetricsForTesting()
 
 	// Empty nodeName should be ignored
-	observeActivityAndTaint("", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, nil)
-	observeActivityAndTaint("   ", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, nil)
+	observeActivityAndTaint("", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, nil, true)
+	observeActivityAndTaint("   ", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, nil, true)
 	clearNodeMetrics("")
 	clearNodeMetrics("   ")
 	if count := testutil.CollectAndCount(activityMetric); count != 0 {
@@ -124,9 +148,12 @@ func TestMetricsEdgeCases(t *testing.T) {
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected 0 taint series for empty nodeName, got %d", count)
 	}
+	if count := testutil.CollectAndCount(schedulableMetric); count != 0 {
+		t.Fatalf("expected 0 schedulable series for empty nodeName, got %d", count)
+	}
 
 	// Empty state and activity fallback to unknown
-	observeActivityAndTaint("worker-edge", "", "", nil)
+	observeActivityAndTaint("worker-edge", "", "", nil, true)
 	if got := testutil.ToFloat64(activityMetric.WithLabelValues("worker-edge", "unknown", "unknown")); got != 1 {
 		t.Fatalf("expected fallback to unknown, got %v", got)
 	}
@@ -151,8 +178,8 @@ func TestMetricsConcurrency(t *testing.T) {
 			node := "node-concurrent"
 			for j := 0; j < 50; j++ {
 				taint := &corev1.Taint{Key: "key", Value: "val", Effect: corev1.TaintEffectNoSchedule}
-				observeActivityAndTaint(node, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, taint)
-				observeActivityAndTaint(node, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil)
+				observeActivityAndTaint(node, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, taint, true)
+				observeActivityAndTaint(node, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil, true)
 				clearNodeMetrics(node)
 			}
 		}(i)
@@ -194,6 +221,9 @@ func TestReconcileExportsMetricsAndCleansUp(t *testing.T) {
 	if got := testutil.ToFloat64(taintMetric.WithLabelValues(nodeName, testPolicy().Key, "active", string(corev1.TaintEffectNoSchedule))); got != 1 {
 		t.Fatalf("expected taintMetric to be 1, got %v", got)
 	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 0 {
+		t.Fatalf("expected schedulableMetric to be 0 for active game reconcile, got %v", got)
+	}
 
 	// 2. Update to idle: should update activity and remove taint metric
 	if err := client.Get(context.Background(), types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}, activity); err != nil {
@@ -217,6 +247,9 @@ func TestReconcileExportsMetricsAndCleansUp(t *testing.T) {
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected 0 taint series after idle reconcile, got %d", count)
 	}
+	if got := testutil.ToFloat64(schedulableMetric.WithLabelValues(nodeName)); got != 1 {
+		t.Fatalf("expected schedulableMetric to be 1 for fresh idle reconcile, got %v", got)
+	}
 
 	// 3. Delete NodeActivity: should clean up metrics
 	if err := client.Get(context.Background(), types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}, activity); err != nil {
@@ -235,6 +268,9 @@ func TestReconcileExportsMetricsAndCleansUp(t *testing.T) {
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected 0 taint series after delete, got %d", count)
 	}
+	if count := testutil.CollectAndCount(schedulableMetric); count != 0 {
+		t.Fatalf("expected 0 schedulable series after delete, got %d", count)
+	}
 }
 
 func TestReconcileNodeNotFoundClearsMetrics(t *testing.T) {
@@ -243,9 +279,12 @@ func TestReconcileNodeNotFoundClearsMetrics(t *testing.T) {
 
 	nodeName := "missing-node"
 	// Pre-populate some metrics for this node
-	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, &corev1.Taint{Key: "key", Value: "val", Effect: corev1.TaintEffectNoSchedule})
+	observeActivityAndTaint(nodeName, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, &corev1.Taint{Key: "key", Value: "val", Effect: corev1.TaintEffectNoSchedule}, true)
 	if count := testutil.CollectAndCount(activityMetric); count != 1 {
 		t.Fatalf("expected 1 activity series, got %d", count)
+	}
+	if count := testutil.CollectAndCount(schedulableMetric); count != 1 {
+		t.Fatalf("expected 1 schedulable series before node not found, got %d", count)
 	}
 
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
@@ -273,5 +312,8 @@ func TestReconcileNodeNotFoundClearsMetrics(t *testing.T) {
 	}
 	if count := testutil.CollectAndCount(taintMetric); count != 0 {
 		t.Fatalf("expected taint metrics to be cleared when node not found, got %d", count)
+	}
+	if count := testutil.CollectAndCount(schedulableMetric); count != 0 {
+		t.Fatalf("expected schedulable metric to be cleared when node not found, got %d", count)
 	}
 }

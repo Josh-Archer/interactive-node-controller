@@ -21,6 +21,11 @@ var (
 		Help: "Managed taint currently applied to the enrolled node.",
 	}, []string{"node", "key", "value", "effect"})
 
+	schedulableMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_schedulable",
+		Help: "Whether this controller is standing down (1) or applying managed taints/fail-closed (0).",
+	}, []string{"node"})
+
 	metricsMu    sync.Mutex
 	lastActivity = make(map[string]activityMetricLabels)
 	lastTaint    = make(map[string]taintMetricLabels)
@@ -38,10 +43,10 @@ type taintMetricLabels struct {
 }
 
 func init() {
-	metrics.Registry.MustRegister(activityMetric, taintMetric)
+	metrics.Registry.MustRegister(activityMetric, taintMetric, schedulableMetric)
 }
 
-func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, activity availabilityv1alpha1.Activity, desired *corev1.Taint) {
+func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, activity availabilityv1alpha1.Activity, desired *corev1.Taint, fresh bool) {
 	nodeName = strings.TrimSpace(nodeName)
 	if nodeName == "" {
 		return
@@ -79,6 +84,12 @@ func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, 
 		taintMetric.WithLabelValues(nodeName, desired.Key, desired.Value, desiredEffect).Set(1)
 		lastTaint[nodeName] = taintMetricLabels{key: desired.Key, value: desired.Value, effect: desiredEffect}
 	}
+
+	if fresh && state == availabilityv1alpha1.StateIdle && activity == availabilityv1alpha1.ActivityIdle && desired == nil {
+		schedulableMetric.WithLabelValues(nodeName).Set(1)
+	} else {
+		schedulableMetric.WithLabelValues(nodeName).Set(0)
+	}
 }
 
 func clearNodeMetrics(nodeName string) {
@@ -97,6 +108,7 @@ func clearNodeMetrics(nodeName string) {
 		taintMetric.DeleteLabelValues(nodeName, oldTaint.key, oldTaint.value, oldTaint.effect)
 		delete(lastTaint, nodeName)
 	}
+	schedulableMetric.DeleteLabelValues(nodeName)
 }
 
 func resetMetricsForTesting() {
@@ -105,6 +117,7 @@ func resetMetricsForTesting() {
 
 	activityMetric.Reset()
 	taintMetric.Reset()
+	schedulableMetric.Reset()
 	lastActivity = make(map[string]activityMetricLabels)
 	lastTaint = make(map[string]taintMetricLabels)
 }

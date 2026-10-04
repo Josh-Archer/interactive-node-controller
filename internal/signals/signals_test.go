@@ -64,6 +64,36 @@ func TestLogindGraphicalSessionAndDegradation(t *testing.T) {
 	}
 }
 
+func TestLogindLockedSessionReturnsIdle(t *testing.T) {
+	provider := LogindProvider{
+		Command:        "/usr/bin/loginctl",
+		GraphicalTypes: map[string]struct{}{"wayland": {}},
+		Timeout:        time.Second,
+		Runner: runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+				return []byte("3 1000 user seat0 tty2\n"), nil
+			}
+			return []byte("Active=yes\nType=wayland\nLockedHint=yes\n"), nil
+		}),
+	}
+	activity, reason, err := provider.Observe(context.Background())
+	if err != nil || activity != ActivityIdle {
+		t.Fatalf("expected idle for locked session, got activity=%q reason=%q err=%v", activity, reason, err)
+	}
+
+	// Active graphical session with IdleHint=yes but LockedHint=no stays interactive
+	provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+			return []byte("3 1000 user seat0 tty2\n"), nil
+		}
+		return []byte("Active=yes\nType=wayland\nIdleHint=yes\nLockedHint=no\n"), nil
+	})
+	activity, reason, err = provider.Observe(context.Background())
+	if err != nil || activity != ActivityInteractive {
+		t.Fatalf("expected interactive when only idleHint is true without session lock, got activity=%q reason=%q err=%v", activity, reason, err)
+	}
+}
+
 func TestSessionIDRejectsOptionInjection(t *testing.T) {
 	if safeSessionID("--system") || safeSessionID("../3") || safeSessionID("") {
 		t.Fatal("unsafe session identifier accepted")

@@ -51,8 +51,9 @@ The controller records a `TaintApplied` condition and `status.managedTaint`.
 The condition makes malformed enrollment, missing Nodes, and applied policy
 observable without inspecting the Node manually. Current activity state and
 managed taints are exported as Prometheus metrics
-`interactive_node_controller_activity{node,state,activity}` and
-`interactive_node_controller_taint{node,key,value,effect}`.
+`interactive_node_controller_activity{node,state,activity}`,
+`interactive_node_controller_taint{node,key,value,effect}`, and
+`interactive_node_controller_schedulable{node}` (1 if the controller is standing down with a fresh idle heartbeat and no managed taint, 0 otherwise).
 
 ## Install boundary
 
@@ -72,9 +73,29 @@ Eviction is disabled and audit-only by default. A consumer must explicitly set
 `eviction.enabled=true` and `eviction.audit=false`, and each workload Pod must
 carry the exact label `interactive-node-controller.io/evictable: "true"`.
 
-Evictions run only while the enrolled activity is `active` with `game`
-activity and the controller's managed taint is `NoSchedule` with the active
-value. Stale, unknown, idle, and interactive states never trigger eviction.
+Evictions run under two conditions:
+1. **Active Game Eviction**: When enrolled activity is `active` with `game` activity and the controller's managed taint is `NoSchedule` with the active value. Both standard evictable pods and lossy pods qualify.
+2. **Protective Fail-Closed Eviction (Lossy Only)**: When the host heartbeat has expired (`HeartbeatAt` older than `staleAfter`) or the reporter explicitly reports `stale`, and the fail-closed `NoSchedule` taint is applied to the node. Only pods that have explicitly opted into lossy eviction are evicted under this condition. Transient `unknown` states during reporter startup/debounce do not evict pods. Stale, unknown, idle, and interactive states never trigger eviction of standard pods.
+
+### Lossy Eviction Opt-In for Ephemeral Workloads
+
+Ephemeral burst workloads (such as disposable CI runners) can opt into lossy eviction by setting the annotation or label `interactive-node-controller.io/allow-lossy-eviction: "true"` in addition to `interactive-node-controller.io/evictable: "true"`.
+
+When lossy eviction is allowed:
+- Pods may use `emptyDir` volumes (scratch space is discarded on eviction).
+- Pods may declare explicit node selectors (`spec.nodeSelector`) or required node affinities (`spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`).
+- Lossy pods have a separate burst eviction budget of `max(4, MaxPerReconcile)` pods per reconcile pass (decoupled from standard pod rate caps).
+
+Hard safety gates are **never bypassed**, even for lossy pods:
+- DaemonSet-owned pods
+- Unmanaged pods (no owner reference)
+- Mirror/static pods
+- Protected namespaces
+- Terminating pods
+- Direct pinned pods (`interactive-node-controller.io/pinned: "true"`)
+- Critical priority pods (`priority >= 2000000000`)
+- Any `hostPath` volumes
+- Any PersistentVolumeClaims (RWO, unbound, local, or hostPath PVs)
 
 The controller uses the Kubernetes `policy/v1` Eviction API.
 Eviction requests include the inspected Pod's UID and resource version as
@@ -97,9 +118,9 @@ immediately, still using the Eviction API and all safety gates.
 Safety gates skip and explain DaemonSet-owned, mirror/static, protected
 namespace, terminating, unmanaged, critical-priority, any non-empty
 `spec.nodeSelector`, hostPath/emptyDir/local storage, PVC-backed RWO, required
-node-affinity, and explicitly pinned Pods. A node selector can target a scarce
+node-affinity, and explicitly pinned Pods (unless opted into lossy eviction for nodeSelector, required affinity, and emptyDir). A node selector can target a scarce
 capability or a single node, so the controller does not attempt a scheduler
-feasibility proof during eviction.
+feasibility proof during eviction of standard workloads.
 Skipped and blocked outcomes are exported in
 `interactive_node_controller_evictions_total{outcome,reason}` and summarized
 by the `Eviction` NodeActivity condition. Workload specs are never mutated.

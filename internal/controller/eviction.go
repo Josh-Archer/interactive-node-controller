@@ -23,12 +23,25 @@ const (
 	EvictableLabel    = "interactive-node-controller.io/evictable"
 	PinnedAnnotation  = "interactive-node-controller.io/pinned"
 
+	AllowLossyEvictionAnnotation = "interactive-node-controller.io/allow-lossy-eviction"
+	AllowLossyEvictionLabel      = "interactive-node-controller.io/allow-lossy-eviction"
+
 	evictionOutcomeAttempted = "attempted"
 	evictionOutcomeAudited   = "audited"
 	evictionOutcomeEvicted   = "evicted"
 	evictionOutcomeSkipped   = "skipped"
 	evictionOutcomeBlocked   = "blocked"
 )
+
+func isLossyEvictionAllowed(pod *corev1.Pod) bool {
+	if pod.Annotations != nil && strings.EqualFold(pod.Annotations[AllowLossyEvictionAnnotation], "true") {
+		return true
+	}
+	if pod.Labels != nil && strings.EqualFold(pod.Labels[AllowLossyEvictionLabel], "true") {
+		return true
+	}
+	return false
+}
 
 var evictionOutcomes = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "interactive_node_controller_evictions_total",
@@ -126,7 +139,18 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
-	if activity.Status.State != availabilityv1alpha1.StateActive || activity.Status.Activity != availabilityv1alpha1.ActivityGame || !hasTaint(node, r.Policy.Key, r.Policy.ActiveValue, corev1.TaintEffectNoSchedule) || desired == nil || desired.Effect != corev1.TaintEffectNoSchedule || desired.Value != r.Policy.ActiveValue {
+	isGameNoSchedule := activity.Status.State == availabilityv1alpha1.StateActive &&
+		activity.Status.Activity == availabilityv1alpha1.ActivityGame &&
+		hasTaint(node, r.Policy.Key, r.Policy.ActiveValue, corev1.TaintEffectNoSchedule) &&
+		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule && desired.Value == r.Policy.ActiveValue
+
+	isStaleHeartbeat := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
+	isReporterStale := activity.Status.State == availabilityv1alpha1.StateStale
+	isProtectiveLossy := (isStaleHeartbeat || isReporterStale) &&
+		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule &&
+		hasTaint(node, r.Policy.Key, desired.Value, corev1.TaintEffectNoSchedule)
+
+	if !isGameNoSchedule && !isProtectiveLossy {
 		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
@@ -136,9 +160,14 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		return summary, err
 	}
 	r.retries.prune(now, node.Name, pods.Items)
+	var regularAttempted, lossyAttempted int
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Spec.NodeName != node.Name {
+			continue
+		}
+		allowLossy := isLossyEvictionAllowed(pod)
+		if !isGameNoSchedule && (!isProtectiveLossy || !allowLossy) {
 			continue
 		}
 		decision, reason := r.evictionDecision(ctx, pod, node.Name, policy)
@@ -161,10 +190,22 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			summary.retryAfter(remaining)
 			continue
 		}
-		if summary.attempted >= policy.MaxPerReconcile {
-			summary.skipped++
-			observeEviction(evictionOutcomeSkipped, "rate-limited")
-			continue
+		if !allowLossy {
+			if regularAttempted >= policy.MaxPerReconcile {
+				summary.skipped++
+				observeEviction(evictionOutcomeSkipped, "rate-limited")
+				continue
+			}
+		} else {
+			maxLossy := 4
+			if policy.MaxPerReconcile > maxLossy {
+				maxLossy = policy.MaxPerReconcile
+			}
+			if lossyAttempted >= maxLossy {
+				summary.skipped++
+				observeEviction(evictionOutcomeSkipped, "rate-limited")
+				continue
+			}
 		}
 		// Bind the request to the exact object that passed the safety gates.
 		// A same-name replacement or metadata change must be re-evaluated.
@@ -175,6 +216,11 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			continue
 		}
 		summary.attempted++
+		if allowLossy {
+			lossyAttempted++
+		} else {
+			regularAttempted++
+		}
 		observeEviction(evictionOutcomeAttempted, "eligible")
 		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}}
 		if pod.Spec.TerminationGracePeriodSeconds != nil {
@@ -236,13 +282,14 @@ func (r *NodeActivityReconciler) evictionDecision(ctx context.Context, pod *core
 	if pod.Annotations != nil && strings.EqualFold(pod.Annotations[PinnedAnnotation], "true") {
 		return false, "direct-pinned"
 	}
-	if len(pod.Spec.NodeSelector) > 0 {
+	allowLossy := isLossyEvictionAllowed(pod)
+	if len(pod.Spec.NodeSelector) > 0 && !allowLossy {
 		// A selector may target a scarce capability or a single node. Without
 		// proving scheduler feasibility across the cluster, treat every selector
 		// as ambiguous and leave the Pod in place.
 		return false, "node-selector"
 	}
-	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil && pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+	if pod.Spec.Affinity != nil && pod.Spec.Affinity.NodeAffinity != nil && pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil && !allowLossy {
 		return false, "required-node-affinity"
 	}
 	if pod.Spec.Priority != nil && *pod.Spec.Priority >= systemPriority {
@@ -252,7 +299,7 @@ func (r *NodeActivityReconciler) evictionDecision(ctx context.Context, pod *core
 		if volume.HostPath != nil {
 			return false, "hostpath-volume"
 		}
-		if volume.EmptyDir != nil {
+		if volume.EmptyDir != nil && !allowLossy {
 			return false, "local-emptydir"
 		}
 		if volume.PersistentVolumeClaim == nil {
