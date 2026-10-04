@@ -73,9 +73,10 @@ Eviction is disabled and audit-only by default. A consumer must explicitly set
 `eviction.enabled=true` and `eviction.audit=false`, and each workload Pod must
 carry the exact label `interactive-node-controller.io/evictable: "true"`.
 
-Evictions run under two conditions:
+Evictions run under three conditions:
 1. **Active Game Eviction**: When enrolled activity is `active` with `game` activity and the controller's managed taint is `NoSchedule` with the active value. Both standard evictable pods and lossy pods qualify.
 2. **Protective Fail-Closed Eviction (Lossy Only)**: When the host heartbeat has expired (`HeartbeatAt` older than `staleAfter`) or the reporter explicitly reports `stale`, and the fail-closed `NoSchedule` taint is applied to the node. Only pods that have explicitly opted into lossy eviction are evicted under this condition. Transient `unknown` states during reporter startup/debounce do not evict pods. Stale, unknown, idle, and interactive states never trigger eviction of standard pods.
+3. **Interactive Session Eviction (Lossy Only)**: When the host is interactively active (user present) or the burst `NoSchedule` taint is applied to the node. Workstation compute is immediately returned to the interactive user by evicting lossy burst workloads. Standard evictable pods are unaffected.
 
 ### Lossy Eviction Opt-In for Ephemeral Workloads
 

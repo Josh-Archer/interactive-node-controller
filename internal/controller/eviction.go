@@ -150,7 +150,12 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule &&
 		hasTaint(node, r.Policy.Key, desired.Value, corev1.TaintEffectNoSchedule)
 
-	if !isGameNoSchedule && !isProtectiveLossy {
+	isInteractiveLossy := (activity.Status.State == availabilityv1alpha1.StateActive && activity.Status.Activity != availabilityv1alpha1.ActivityGame) ||
+		activity.Status.Activity == availabilityv1alpha1.ActivityInteractive ||
+		hasTaint(node, r.Policy.Key, r.Policy.InteractiveValue, corev1.TaintEffectPreferNoSchedule) ||
+		(r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule))
+
+	if !isGameNoSchedule && !isProtectiveLossy && !isInteractiveLossy {
 		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
@@ -167,7 +172,7 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			continue
 		}
 		allowLossy := isLossyEvictionAllowed(pod)
-		if !isGameNoSchedule && (!isProtectiveLossy || !allowLossy) {
+		if !isGameNoSchedule && (!allowLossy || (!isProtectiveLossy && !isInteractiveLossy)) {
 			continue
 		}
 		decision, reason := r.evictionDecision(ctx, pod, node.Name, policy)
