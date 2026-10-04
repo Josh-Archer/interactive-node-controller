@@ -300,3 +300,113 @@ func TestReconcileDeleteNodeWithoutOwnedTaintRemovesFinalizer(t *testing.T) {
 func testPolicy() TaintPolicy {
 	return TaintPolicy{Key: "availability.interactive-node.io/state", InteractiveValue: "interactive", ActiveValue: "active", FailClosedValue: "unavailable", StaleAfter: time.Minute, FailClosed: true}
 }
+
+func TestReconcileSchedulableNodeLabel(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	activity := &availabilityv1alpha1.NodeActivity{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"},
+		Status: availabilityv1alpha1.NodeActivityStatus{
+			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
+		},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = availabilityv1alpha1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
+
+	// Idle -> node gets SchedulableNodeLabel="true"
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	updatedNode := &corev1.Node{}
+	if err := client.Get(context.Background(), types.NamespacedName{Name: node.Name}, updatedNode); err != nil {
+		t.Fatal(err)
+	}
+	if updatedNode.Labels[SchedulableNodeLabel] != "true" {
+		t.Fatalf("expected node label %s to be true, got %v", SchedulableNodeLabel, updatedNode.Labels)
+	}
+
+	// Interactive -> node label removed
+	if err := client.Get(context.Background(), types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}, activity); err != nil {
+		t.Fatal(err)
+	}
+	activity.Status.State = availabilityv1alpha1.StateActive
+	activity.Status.Activity = availabilityv1alpha1.ActivityInteractive
+	if err := client.Status().Update(context.Background(), activity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Get(context.Background(), types.NamespacedName{Name: node.Name}, updatedNode); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := updatedNode.Labels[SchedulableNodeLabel]; exists {
+		t.Fatalf("expected node label %s to be removed when interactive", SchedulableNodeLabel)
+	}
+}
+
+func TestReconcileBurstTaintKey(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	policy := testPolicy()
+	policy.BurstTaintKey = "availability.interactive-node.io/schedulable"
+
+	activity := &availabilityv1alpha1.NodeActivity{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"},
+		Status: availabilityv1alpha1.NodeActivityStatus{
+			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
+		},
+	}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = availabilityv1alpha1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: policy}
+
+	// Idle -> burst taint absent
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	updatedNode := &corev1.Node{}
+	if err := client.Get(context.Background(), types.NamespacedName{Name: node.Name}, updatedNode); err != nil {
+		t.Fatal(err)
+	}
+	for _, taint := range updatedNode.Spec.Taints {
+		if taint.Key == policy.BurstTaintKey {
+			t.Fatalf("burst taint should not be present when idle")
+		}
+	}
+
+	// Interactive -> burst taint present with NoSchedule
+	if err := client.Get(context.Background(), types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}, activity); err != nil {
+		t.Fatal(err)
+	}
+	activity.Status.State = availabilityv1alpha1.StateActive
+	activity.Status.Activity = availabilityv1alpha1.ActivityInteractive
+	if err := client.Status().Update(context.Background(), activity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Get(context.Background(), types.NamespacedName{Name: node.Name}, updatedNode); err != nil {
+		t.Fatal(err)
+	}
+	var foundBurst bool
+	for _, taint := range updatedNode.Spec.Taints {
+		if taint.Key == policy.BurstTaintKey {
+			foundBurst = true
+			if taint.Effect != corev1.TaintEffectNoSchedule {
+				t.Fatalf("expected burst taint effect NoSchedule, got %v", taint.Effect)
+			}
+		}
+	}
+	if !foundBurst {
+		t.Fatalf("expected burst taint to be applied when interactive")
+	}
+}
