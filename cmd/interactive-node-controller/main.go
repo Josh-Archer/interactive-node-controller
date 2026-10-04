@@ -37,6 +37,7 @@ func run() error {
 	flag.StringVar(&policy.InteractiveValue, "interactive-taint-value", "interactive", "taint value used for an interactive desktop")
 	flag.StringVar(&policy.ActiveValue, "active-taint-value", "active", "taint value used for an active game")
 	flag.StringVar(&policy.FailClosedValue, "fail-closed-taint-value", "unavailable", "taint value used for stale or unknown state")
+	flag.StringVar(&policy.BurstTaintKey, "burst-taint-key", "", "optional secondary taint key applied with NoSchedule when node is not fresh idle")
 	flag.DurationVar(&policy.StaleAfter, "stale-after", time.Minute, "heartbeat age after which the node fails closed")
 	flag.BoolVar(&policy.FailClosed, "fail-closed", true, "apply NoSchedule for unknown or stale host state")
 	flag.BoolVar(&eviction.Enabled, "eviction-enabled", false, "allow eligible Pods to be sent to the Kubernetes Eviction API")

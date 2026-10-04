@@ -24,15 +24,17 @@ import (
 const (
 	TaintAppliedCondition = "TaintApplied"
 	NodeActivityFinalizer = "availability.interactive-node.io/cleanup"
+	SchedulableNodeLabel  = "availability.interactive-node.io/schedulable"
 )
 
-// TaintPolicy is deliberately small: one controller instance owns one taint
-// key. It never alters unrelated taints or workload objects.
+// TaintPolicy is deliberately small: one controller instance owns one primary taint
+// key and optionally a secondary burst taint key.
 type TaintPolicy struct {
 	Key              string
 	InteractiveValue string
 	ActiveValue      string
 	FailClosedValue  string
+	BurstTaintKey    string
 	StaleAfter       time.Duration
 	FailClosed       bool
 }
@@ -109,8 +111,25 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	changed := reconcileOwnedTaint(node, r.Policy.Key, desired)
-	if changed {
+	fresh := protection.source != nil && !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
+	isSchedulable := fresh && protection.source.Status.State == availabilityv1alpha1.StateIdle && protection.source.Status.Activity == availabilityv1alpha1.ActivityIdle && desired == nil
+
+	changedLabel := reconcileSchedulableLabel(node, isSchedulable)
+	changedPrimary := reconcileOwnedTaint(node, r.Policy.Key, desired)
+	var changedBurst bool
+	if r.Policy.BurstTaintKey != "" {
+		var desiredBurst *corev1.Taint
+		if !isSchedulable {
+			desiredBurst = &corev1.Taint{
+				Key:    r.Policy.BurstTaintKey,
+				Value:  r.Policy.FailClosedValue,
+				Effect: corev1.TaintEffectNoSchedule,
+			}
+		}
+		changedBurst = reconcileOwnedTaint(node, r.Policy.BurstTaintKey, desiredBurst)
+	}
+
+	if changedLabel || changedPrimary || changedBurst {
 		if err := r.Update(ctx, node); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -169,8 +188,24 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	if err != nil {
 		return err
 	}
-	changed := reconcileOwnedTaint(node, r.Policy.Key, protection.taint)
-	if changed {
+	changedLabel := reconcileSchedulableLabel(node, false)
+	changedPrimary := reconcileOwnedTaint(node, r.Policy.Key, protection.taint)
+	var changedBurst bool
+	if r.Policy.BurstTaintKey != "" {
+		var desiredBurst *corev1.Taint
+		if protection.source != nil {
+			fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
+			if !(fresh && protection.source.Status.State == availabilityv1alpha1.StateIdle && protection.source.Status.Activity == availabilityv1alpha1.ActivityIdle && protection.taint == nil) {
+				desiredBurst = &corev1.Taint{
+					Key:    r.Policy.BurstTaintKey,
+					Value:  r.Policy.FailClosedValue,
+					Effect: corev1.TaintEffectNoSchedule,
+				}
+			}
+		}
+		changedBurst = reconcileOwnedTaint(node, r.Policy.BurstTaintKey, desiredBurst)
+	}
+	if changedLabel || changedPrimary || changedBurst {
 		if err := r.Update(ctx, node); err != nil {
 			return err
 		}
@@ -256,6 +291,26 @@ func reconcileOwnedTaint(node *corev1.Node, key string, desired *corev1.Taint) b
 	}
 	node.Spec.Taints = next
 	return true
+}
+
+func reconcileSchedulableLabel(node *corev1.Node, schedulable bool) bool {
+	if schedulable {
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		if node.Labels[SchedulableNodeLabel] != "true" {
+			node.Labels[SchedulableNodeLabel] = "true"
+			return true
+		}
+		return false
+	}
+	if node.Labels != nil {
+		if _, exists := node.Labels[SchedulableNodeLabel]; exists {
+			delete(node.Labels, SchedulableNodeLabel)
+			return true
+		}
+	}
+	return false
 }
 
 func (r *NodeActivityReconciler) setCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, status metav1.ConditionStatus, reason, message string, taint *corev1.Taint) error {
