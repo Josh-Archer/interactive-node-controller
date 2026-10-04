@@ -123,7 +123,8 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		return ctrl.Result{}, err
 	}
 	if protection.source != nil {
-		observeActivityAndTaint(activity.Spec.NodeName, protection.source.Status.State, protection.source.Status.Activity, desired)
+		fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
+		observeActivityAndTaint(activity.Spec.NodeName, protection.source.Status.State, protection.source.Status.Activity, desired, fresh)
 	}
 	evictionSummary := evictionSummary{}
 	if protection.count == 1 {
@@ -177,7 +178,8 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	if protection.source == nil {
 		clearNodeMetrics(nodeName)
 	} else {
-		observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint)
+		fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
+		observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, fresh)
 	}
 	return nil
 }

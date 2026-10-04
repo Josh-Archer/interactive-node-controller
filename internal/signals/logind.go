@@ -25,13 +25,13 @@ func (p LogindProvider) Observe(ctx context.Context) (Activity, string, error) {
 	}
 	sessions := parseSessionIDs(string(output))
 	for _, session := range sessions {
-		properties, err := p.Runner.Run(ctx, p.Command, "show-session", session, "--property=Active", "--property=Type", "--no-pager")
+		properties, err := p.Runner.Run(ctx, p.Command, "show-session", session, "--property=Active", "--property=Type", "--property=IdleHint", "--property=LockedHint", "--no-pager")
 		if err != nil {
 			return ActivityUnknown, "", fmt.Errorf("inspect logind session %s: %w", session, err)
 		}
-		active, sessionType := parseSessionProperties(string(properties))
+		active, sessionType, _, lockedHint := parseSessionProperties(string(properties))
 		_, graphical := p.GraphicalTypes[strings.ToLower(sessionType)]
-		if active && graphical {
+		if active && graphical && !lockedHint {
 			return ActivityInteractive, fmt.Sprintf("active %s session %s", sessionType, session), nil
 		}
 	}
@@ -64,9 +64,11 @@ func safeSessionID(value string) bool {
 	return true
 }
 
-func parseSessionProperties(output string) (bool, string) {
+func parseSessionProperties(output string) (bool, string, bool, bool) {
 	var active bool
 	var sessionType string
+	var idleHint bool
+	var lockedHint bool
 	for _, line := range strings.Split(output, "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
 		if !found {
@@ -77,7 +79,11 @@ func parseSessionProperties(output string) (bool, string) {
 			active = strings.EqualFold(value, "yes")
 		case "Type":
 			sessionType = strings.ToLower(value)
+		case "IdleHint":
+			idleHint = strings.EqualFold(value, "yes")
+		case "LockedHint":
+			lockedHint = strings.EqualFold(value, "yes")
 		}
 	}
-	return active, sessionType
+	return active, sessionType, idleHint, lockedHint
 }
