@@ -420,3 +420,26 @@ func TestEvictionDecoupledLossyBurstBudget(t *testing.T) {
 		t.Fatalf("expected 5 evictions (1 normal + 4 lossy) in single pass with MaxPerReconcile=1, got summary=%#v evictions=%#v", summary, evictor.names)
 	}
 }
+
+func TestLossyEvictionEvictsDuringInteractiveUse(t *testing.T) {
+	normalPod := eligiblePod("normal-pod")
+	lossyPod := eligiblePodWithLabels("runner-lossy", map[string]string{
+		EvictableLabel:          "true",
+		AllowLossyEvictionLabel: "true",
+	})
+	lossyPod.Spec.Volumes = []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityInteractive, corev1.TaintEffectPreferNoSchedule, []*corev1.Pod{normalPod, lossyPod})
+	node.Spec.Taints[0].Value = r.Policy.InteractiveValue
+
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evictor.names) != 1 || evictor.names[0].Name != "runner-lossy" {
+		t.Fatalf("expected only runner-lossy to be evicted during interactive use, got %#v", evictor.names)
+	}
+	if summary.evicted != 1 {
+		t.Fatalf("expected 1 eviction, got %d", summary.evicted)
+	}
+}
