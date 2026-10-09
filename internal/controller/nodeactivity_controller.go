@@ -219,7 +219,26 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	return nil
 }
 
+const PodNodeNameKey = "spec.nodeName"
+
+// IndexPodNodeName extracts the pod's assigned node name for field indexing.
+func IndexPodNodeName(rawObj client.Object) []string {
+	pod, ok := rawObj.(*corev1.Pod)
+	if !ok || pod.Spec.NodeName == "" {
+		return nil
+	}
+	return []string{pod.Spec.NodeName}
+}
+
+// SetupPodNodeNameIndexer registers the field indexer for pod spec.nodeName on the given FieldIndexer.
+func SetupPodNodeNameIndexer(ctx context.Context, indexer client.FieldIndexer) error {
+	return indexer.IndexField(ctx, &corev1.Pod{}, PodNodeNameKey, IndexPodNodeName)
+}
+
 func (r *NodeActivityReconciler) SetupWithManager(manager ctrl.Manager) error {
+	if err := SetupPodNodeNameIndexer(context.Background(), manager.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(manager).
 		For(&availabilityv1alpha1.NodeActivity{}).
 		Watches(&availabilityv1alpha1.NodeActivity{}, handler.EnqueueRequestsFromMapFunc(r.requestsForNode)).

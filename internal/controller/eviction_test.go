@@ -276,7 +276,12 @@ func evictionFixture(t *testing.T, state availabilityv1alpha1.State, activityTyp
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithRuntimeObjects(objects...).Build()
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, PodNodeNameKey, IndexPodNodeName).
+		WithStatusSubresource(activity).
+		WithRuntimeObjects(objects...).
+		Build()
 	evictor := &recordingEvictor{}
 	return &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy(), Eviction: EvictionPolicy{Enabled: true, Audit: false, ProtectedNamespaces: map[string]struct{}{"kube-system": {}}, MaxPerReconcile: 1, RetryBackoff: time.Second}, Evictor: evictor}, activity, node, evictor
 }
@@ -441,5 +446,147 @@ func TestLossyEvictionEvictsDuringInteractiveUse(t *testing.T) {
 	}
 	if summary.evicted != 1 {
 		t.Fatalf("expected 1 eviction, got %d", summary.evicted)
+	}
+}
+
+func TestIndexPodNodeName(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{NodeName: "target-node"}}
+	values := IndexPodNodeName(pod)
+	if len(values) != 1 || values[0] != "target-node" {
+		t.Fatalf("expected [target-node], got %#v", values)
+	}
+
+	podNoNode := &corev1.Pod{Spec: corev1.PodSpec{}}
+	if values := IndexPodNodeName(podNoNode); values != nil {
+		t.Fatalf("expected nil for empty nodeName, got %#v", values)
+	}
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "some-node"}}
+	if values := IndexPodNodeName(node); values != nil {
+		t.Fatalf("expected nil for non-Pod object, got %#v", values)
+	}
+}
+
+func TestEvictionIndexedByNode_MultiNodeIsolation(t *testing.T) {
+	podTarget := eligiblePod("pod-target-node")
+	podTarget.Spec.NodeName = "desktop"
+
+	podOther1 := eligiblePod("pod-other-node-1")
+	podOther1.Spec.NodeName = "other-node-1"
+
+	podOther2 := eligiblePod("pod-other-node-2")
+	podOther2.Spec.NodeName = "other-node-2"
+
+	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{podTarget, podOther1, podOther2})
+
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 1 || len(evictor.names) != 1 || evictor.names[0].Name != "pod-target-node" {
+		t.Fatalf("expected only pod-target-node to be evicted, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+	// Pods on other nodes must not be counted in summary.skipped or attempted
+	if summary.skipped != 0 || summary.attempted != 1 {
+		t.Fatalf("expected 0 skipped and 1 attempted for off-node isolation, got summary=%#v", summary)
+	}
+}
+
+func TestEvictionFailsWhenIndexMissing(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	activity := &availabilityv1alpha1.NodeActivity{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop"},
+		Status: availabilityv1alpha1.NodeActivityStatus{
+			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
+		},
+	}
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop"},
+		Spec:       corev1.NodeSpec{Taints: []corev1.Taint{{Key: "availability.interactive-node.io/state", Value: "active", Effect: corev1.TaintEffectNoSchedule}}},
+	}
+	pod := eligiblePod("pod-on-desktop")
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = availabilityv1alpha1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	// Build fake client deliberately WITHOUT WithIndex
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(activity).
+		WithRuntimeObjects(activity, node, pod).
+		Build()
+
+	evictor := &recordingEvictor{}
+	r := &NodeActivityReconciler{
+		Client:   client,
+		Clock:    clocktesting.NewFakeClock(now),
+		Policy:   testPolicy(),
+		Eviction: EvictionPolicy{Enabled: true, Audit: false, ProtectedNamespaces: map[string]struct{}{"kube-system": {}}, MaxPerReconcile: 1, RetryBackoff: time.Second},
+		Evictor:  evictor,
+	}
+
+	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
+	if err == nil {
+		t.Fatal("expected error when index is missing, got nil error")
+	}
+	if summary.evicted != 0 {
+		t.Fatalf("expected 0 evictions on index error, got %d", summary.evicted)
+	}
+}
+
+func BenchmarkReconcileEvictions_ManyOffNodePods(b *testing.B) {
+	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
+	activity := &availabilityv1alpha1.NodeActivity{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop"},
+		Status: availabilityv1alpha1.NodeActivityStatus{
+			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
+		},
+	}
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "desktop"},
+		Spec:       corev1.NodeSpec{Taints: []corev1.Taint{{Key: "availability.interactive-node.io/state", Value: "active", Effect: corev1.TaintEffectNoSchedule}}},
+	}
+
+	targetPod := eligiblePod("target-runner")
+	targetPod.Spec.NodeName = "desktop"
+
+	objects := []runtime.Object{activity, node, targetPod}
+	for i := 0; i < 500; i++ {
+		offNodePod := eligiblePod(fmt.Sprintf("off-node-pod-%d", i))
+		offNodePod.Spec.NodeName = fmt.Sprintf("other-node-%d", i%5)
+		objects = append(objects, offNodePod)
+	}
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = availabilityv1alpha1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, PodNodeNameKey, IndexPodNodeName).
+		WithStatusSubresource(activity).
+		WithRuntimeObjects(objects...).
+		Build()
+
+	evictor := &recordingEvictor{}
+	r := &NodeActivityReconciler{
+		Client:   client,
+		Clock:    clocktesting.NewFakeClock(now),
+		Policy:   testPolicy(),
+		Eviction: EvictionPolicy{Enabled: true, Audit: false, ProtectedNamespaces: map[string]struct{}{"kube-system": {}}, MaxPerReconcile: 1, RetryBackoff: time.Second},
+		Evictor:  evictor,
+	}
+
+	ctx := context.Background()
+	taint := &node.Spec.Taints[0]
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = r.reconcileEvictions(ctx, activity, node, taint)
 	}
 }
