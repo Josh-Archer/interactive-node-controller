@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	availabilityv1alpha1 "github.com/Josh-Archer/interactive-node-controller/api/v1alpha1"
@@ -161,7 +162,7 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 	}
 
 	pods := &corev1.PodList{}
-	if err := r.List(ctx, pods); err != nil {
+	if err := r.List(ctx, pods, client.MatchingFields{PodNodeNameKey: node.Name}); err != nil {
 		return summary, err
 	}
 	r.retries.prune(now, node.Name, pods.Items)
