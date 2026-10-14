@@ -131,6 +131,13 @@ make chart-lint
 checks, including Helm rendering. See [docs/roadmap.md](docs/roadmap.md) for
 later phases.
 
+`make test-api` runs the CRD and eviction API tests against pinned Kubernetes
+1.32 envtest assets and a local API server. `make test-kind` exercises PDB
+admission in a disposable Kind cluster; set `KUBECONFIG` to that cluster's
+kubeconfig first. The test refuses contexts whose name does not start with
+`kind-`, and removes its test namespace when it finishes. CI creates and removes
+its own Kubernetes 1.32.0 Kind cluster.
+
 ## License
 
 Interactive Node Controller is licensed under the [Apache License, Version 2.0](LICENSE).
