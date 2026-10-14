@@ -7,10 +7,20 @@ the consumer's GitOps system. The reporter's credential is limited to `patch`
 on the corresponding `nodeactivities/status` resource name. It must never have
 Node access.
 
-The controller has the required Node update permission, but reconciles only one
-configured taint key. It removes and replaces only taints matching that key;
+The controller has Node `get`, `list`, `watch`, `patch`, and `update`
+permission. It reconciles one configured taint key and, when configured, the
+burst taint key. It removes and replaces only taints matching those keys;
 unrelated Node taints remain untouched. It does not create, delete, evict, or
 modify Pods, Deployments, StatefulSets, DaemonSets, or any other workload spec.
+
+`NodeActivityReconciler.SetupWithManager` watches Node objects. A change to a
+managed taint (key, value, or effect) or to the
+`availability.interactive-node.io/schedulable` label enqueues every
+`NodeActivity` that enrolls that Node, and the controller restores the desired
+state. Node status updates that leave those fields unchanged stay off the
+queue, and kubelet heartbeats keep their existing reconcile schedule. Node
+create and delete events also enqueue those enrollments, which applies
+protection when a Node appears and records `NodeNotFound` when it disappears.
 
 Keep exactly one live `NodeActivity` enrollment per Node. If multiple objects
 across any namespaces target the same Node, the controller conservatively

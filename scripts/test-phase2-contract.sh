@@ -30,4 +30,20 @@ grep -q 'resources: \[nodes\]' chart/templates/rbac.yaml
 grep -q 'resources: \[nodeactivities/status\]' chart/templates/rbac.yaml
 grep -q 'TaintAppliedCondition' internal/controller/nodeactivity_controller.go
 grep -q 'reconcileOwnedTaint' internal/controller/nodeactivity_controller.go
+grep -q 'Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEnrolledNode)' internal/controller/nodeactivity_controller.go
+
+python3 - <<'PY'
+from pathlib import Path
+
+lines = Path("chart/templates/rbac.yaml").read_text().splitlines()
+for index, line in enumerate(lines):
+    if line.strip() == "resources: [nodes]":
+        verbs = lines[index + 1].strip()
+        expected = "verbs: [get, list, watch, patch, update]"
+        assert verbs == expected, f"node RBAC verbs = {verbs!r}"
+        break
+else:
+    raise SystemExit("nodes rule missing from chart RBAC")
+print("node watch RBAC contract checks passed")
+PY
 echo 'phase 2 contract checks passed'
