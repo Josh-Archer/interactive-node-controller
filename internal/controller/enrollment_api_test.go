@@ -46,6 +46,39 @@ func TestEnrollmentAPIIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exercise the installed CRD's admission and status-subresource behavior
+	// directly, independent of the controller's fake-client contract tests.
+	contract := &availabilityv1alpha1.NodeActivity{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api-contract"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop"},
+		Status:     availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateActive},
+	}
+	if err := direct.Create(context.Background(), contract); err != nil {
+		t.Fatal(err)
+	}
+	createdContract := &availabilityv1alpha1.NodeActivity{}
+	if err := direct.Get(context.Background(), client.ObjectKeyFromObject(contract), createdContract); err != nil {
+		t.Fatal(err)
+	}
+	if createdContract.Status.State != "" {
+		t.Fatalf("status on create bypassed the status subresource: %#v", createdContract.Status)
+	}
+	invalid := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "invalid-node"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "Not_A_Node"}}
+	if err := direct.Create(context.Background(), invalid); !apierrors.IsInvalid(err) {
+		t.Fatalf("invalid nodeName create error = %v, want Invalid", err)
+	}
+	createdContract.Spec.NodeName = "another-node"
+	if err := direct.Update(context.Background(), createdContract); !apierrors.IsInvalid(err) {
+		t.Fatalf("immutable nodeName update error = %v, want Invalid", err)
+	}
+	createdContract.Spec.NodeName = "desktop"
+	createdContract.Status.State = availabilityv1alpha1.State("not-a-state")
+	if err := direct.Status().Update(context.Background(), createdContract); !apierrors.IsInvalid(err) {
+		t.Fatalf("invalid status enum update error = %v, want Invalid", err)
+	}
+	if err := direct.Delete(context.Background(), createdContract); err != nil {
+		t.Fatal(err)
+	}
 	manager, err := ctrl.NewManager(config, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0"})
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +159,39 @@ func TestEnrollmentAPIIntegration(t *testing.T) {
 		}
 	}
 	assertProtection("active")
+	// Reporter writes are scoped to host-owned status fields. Controller-owned
+	// conditions and managedTaint must survive a reporter status update.
+	if err := direct.Get(ctx, client.ObjectKeyFromObject(active), active); err != nil {
+		t.Fatal(err)
+	}
+	controllerCondition := meta.FindStatusCondition(active.Status.Conditions, TaintAppliedCondition)
+	if controllerCondition == nil || active.Status.ManagedTaint == nil {
+		t.Fatalf("controller status was not persisted: %#v", active.Status)
+	}
+	beforeReporterWrite := active.DeepCopy()
+	active.Status.State = availabilityv1alpha1.StateActive
+	active.Status.Activity = availabilityv1alpha1.ActivityGame
+	active.Status.Reason = "reporter heartbeat"
+	active.Status.HeartbeatAt = time.Now().UTC().Add(time.Second)
+	if err := direct.Status().Patch(ctx, active, client.MergeFrom(beforeReporterWrite)); err != nil {
+		t.Fatal(err)
+	}
+	if err := direct.Get(ctx, client.ObjectKeyFromObject(active), active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Status.Reason != "reporter heartbeat" || active.Status.ManagedTaint == nil || meta.FindStatusCondition(active.Status.Conditions, TaintAppliedCondition) == nil {
+		t.Fatalf("reporter write clobbered controller status: %#v", active.Status)
+	}
+	// A subsequent controller reconciliation must retain the reporter's fields.
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(active)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := direct.Get(ctx, client.ObjectKeyFromObject(active), active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Status.Reason != "reporter heartbeat" || active.Status.Activity != availabilityv1alpha1.ActivityGame || active.Status.ManagedTaint == nil {
+		t.Fatalf("controller write clobbered reporter status: %#v", active.Status)
+	}
 	heartbeat := active.Status.HeartbeatAt
 	// Out-of-band taint and schedulable-label edits must be restored by the Node
 	// watch. The reporter heartbeat is left unchanged so a later status write is
