@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -125,6 +126,69 @@ func TestEnrollmentAPIIntegration(t *testing.T) {
 		}
 	}
 	assertProtection("active")
+	heartbeat := active.Status.HeartbeatAt
+	// Out-of-band taint and schedulable-label edits must be restored by the Node
+	// watch. The reporter heartbeat is left unchanged so a later status write is
+	// not what repairs the Node.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &corev1.Node{}
+		if err := direct.Get(ctx, types.NamespacedName{Name: node.Name}, fresh); err != nil {
+			return err
+		}
+		kept := make([]corev1.Taint, 0, len(fresh.Spec.Taints))
+		for _, taint := range fresh.Spec.Taints {
+			if taint.Key == testPolicy().Key {
+				taint.Value = "tampered"
+				taint.Effect = corev1.TaintEffectPreferNoSchedule
+			}
+			kept = append(kept, taint)
+		}
+		fresh.Spec.Taints = kept
+		if fresh.Labels == nil {
+			fresh.Labels = map[string]string{}
+		}
+		fresh.Labels[SchedulableNodeLabel] = "true"
+		return direct.Update(ctx, fresh)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	poll(func() bool {
+		if err := direct.Get(ctx, types.NamespacedName{Name: node.Name}, node); err != nil {
+			return false
+		}
+		if _, labeled := node.Labels[SchedulableNodeLabel]; labeled {
+			return false
+		}
+		return hasTaint(node, "unrelated", "keep", corev1.TaintEffectNoSchedule) && hasTaint(node, testPolicy().Key, "active", corev1.TaintEffectNoSchedule)
+	})
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		fresh := &corev1.Node{}
+		if err := direct.Get(ctx, types.NamespacedName{Name: node.Name}, fresh); err != nil {
+			return err
+		}
+		kept := make([]corev1.Taint, 0, len(fresh.Spec.Taints))
+		for _, taint := range fresh.Spec.Taints {
+			if taint.Key != testPolicy().Key {
+				kept = append(kept, taint)
+			}
+		}
+		fresh.Spec.Taints = kept
+		return direct.Update(ctx, fresh)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	poll(func() bool {
+		if err := direct.Get(ctx, types.NamespacedName{Name: node.Name}, node); err != nil {
+			return false
+		}
+		return hasTaint(node, "unrelated", "keep", corev1.TaintEffectNoSchedule) && hasTaint(node, testPolicy().Key, "active", corev1.TaintEffectNoSchedule)
+	})
+	if err := direct.Get(ctx, client.ObjectKeyFromObject(active), active); err != nil {
+		t.Fatal(err)
+	}
+	if !active.Status.HeartbeatAt.Equal(heartbeat) {
+		t.Fatalf("heartbeat changed from %s to %s", heartbeat, active.Status.HeartbeatAt)
+	}
 	if err := direct.Delete(ctx, idle); err != nil {
 		t.Fatal(err)
 	}

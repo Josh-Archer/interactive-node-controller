@@ -11,7 +11,7 @@ rules:
     verbs: [get, patch, update]
   - apiGroups: ['']
     resources: [nodes]
-    verbs: [get, patch, update]
+    verbs: [get, list, watch, patch, update]
   - apiGroups: ['']
     resources: [pods]
     verbs: [get, list, watch]
