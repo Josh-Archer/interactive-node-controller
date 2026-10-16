@@ -81,7 +81,8 @@ func TestLogindLockedSessionReturnsIdle(t *testing.T) {
 		t.Fatalf("expected idle for locked session, got activity=%q reason=%q err=%v", activity, reason, err)
 	}
 
-	// Active graphical session with IdleHint=yes but LockedHint=no stays interactive
+	// An active graphical session is idle when logind reports IdleHint=yes,
+	// even when it is not locked.
 	provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
 			return []byte("3 1000 user seat0 tty2\n"), nil
@@ -89,8 +90,38 @@ func TestLogindLockedSessionReturnsIdle(t *testing.T) {
 		return []byte("Active=yes\nType=wayland\nIdleHint=yes\nLockedHint=no\n"), nil
 	})
 	activity, reason, err = provider.Observe(context.Background())
-	if err != nil || activity != ActivityInteractive {
-		t.Fatalf("expected interactive when only idleHint is true without session lock, got activity=%q reason=%q err=%v", activity, reason, err)
+	if err != nil || activity != ActivityIdle {
+		t.Fatalf("expected idle when IdleHint is true without session lock, got activity=%q reason=%q err=%v", activity, reason, err)
+	}
+}
+
+func TestLogindIdleSinceHint(t *testing.T) {
+	provider := LogindProvider{
+		Command:        "/usr/bin/loginctl",
+		GraphicalTypes: map[string]struct{}{"wayland": {}},
+		Timeout:        time.Second,
+	}
+	for _, test := range []struct {
+		name       string
+		properties string
+		want       Activity
+	}{
+		{name: "nonzero timestamp is idle", properties: "Active=yes\nType=wayland\nIdleSinceHint=123456\n", want: ActivityIdle},
+		{name: "zero timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=0\n", want: ActivityInteractive},
+		{name: "invalid timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=n/a\n", want: ActivityInteractive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+					return []byte("3 1000 user seat0 tty2\n"), nil
+				}
+				return []byte(test.properties), nil
+			})
+			activity, reason, err := provider.Observe(context.Background())
+			if err != nil || activity != test.want {
+				t.Fatalf("Observe() = %q, %q, %v; want %q", activity, reason, err, test.want)
+			}
+		})
 	}
 }
 
