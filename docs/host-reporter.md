@@ -71,13 +71,17 @@ unknown rather than idle.
 When enabled, the reporter executes the configured absolute `nvidia-smi` path
 twice, with fixed argument arrays and never a shell. One query reads GPU
 utilization. The other lists compute applications (`--query-compute-apps`).
-Those inputs are classified separately. A game observation requires at least
-one compute application and a GPU at or above `utilization_floor_percent`.
-Utilization alone is not a game: desktop compositing and other graphics
-clients can exceed the floor without holding a compute context, and that case
-stays idle. A compute application while utilization remains below the floor
-stays idle as well; the reason names the application so it is not confused
-with an empty compute-app list.
+Any parsed compute application is a game observation, whatever the utilization.
+That includes 0%, readings below `utilization_floor_percent`, and a host where
+every GPU utilization reading is non-numeric. A resident compute application
+keeps the node busy. The reason names the application and the utilization so
+the observation is distinct from an empty compute-app list.
+
+Utilization at or above the floor with no compute application stays idle.
+Desktop compositing and other graphics clients can exceed the floor without
+holding a compute context. The floor only distinguishes that idle reason
+(`meets N% floor without compute apps` versus `below N% floor`). It does not
+gate a resident compute application.
 
 This signal is deliberately opt-in. A compute application is not universally
 equivalent to a game, and graphics-only clients (including games that never
@@ -86,13 +90,14 @@ for those binaries.
 
 When `nvidia-smi` executes successfully but every GPU reports a non-numeric
 unavailable utilization reading (such as `N/A`, `[N/A]`, or `[Not Supported]`),
-the provider reports an idle observation with reason `gpu utilization
-unavailable` and does not query compute apps. Unavailable readings are also
-tolerated when valid numeric utilization readings are present on other GPUs.
-Missing tools, non-zero command exits, timeouts, empty utilization output,
-garbage or out-of-range utilization, and unparsable compute-app rows degrade
-to unknown. An empty compute-app listing is a successful observation that no
-compute application is running.
+the provider still queries compute applications. A parsed compute application
+is a game. With no compute application, the provider reports an idle
+observation with reason `gpu utilization unavailable`. Unavailable readings are
+also tolerated when valid numeric utilization readings are present on other
+GPUs. Missing tools, non-zero command exits, timeouts, empty utilization
+output, garbage or out-of-range utilization, and unparsable compute-app rows
+degrade to unknown. An empty compute-app listing is a successful observation
+that no compute application is running.
 
 ## NodeActivity reporting API
 
@@ -136,9 +141,10 @@ and rotated by a consumer-owned enrollment mechanism.
   `NodeActivity` and status subresource.
 - Phase 1 does not create or rotate credentials. A static, long-lived broad
   credential is explicitly unsupported.
-- The NVIDIA signal attributes a game only when a compute application is
-  running and utilization meets the floor. Graphics-only utilization, including
-  desktop compositing, stays idle. Leave it disabled unless that meaning fits
-  the host.
+- The NVIDIA signal attributes a game whenever a compute application is
+  running, including when utilization is 0%, below the floor, or unavailable.
+  Utilization at or above the floor with no compute application, including
+  desktop compositing, stays idle. Leave the signal disabled unless that
+  meaning fits the host.
 - The shipped binary target is Linux amd64. Other builds may compile but are
   not Phase 1's supported deployment target.

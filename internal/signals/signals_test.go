@@ -229,12 +229,10 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityGame)
 	}
 
-	// All-N/A single GPU yields neutral idle observation and aggregates with idle providers to idle
+	// All-N/A single GPU with no compute app yields neutral idle and aggregates to idle.
 	singleUnavailable := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("N/A\n"), nil
-		}),
+		Runner: nvidiaRunner("N/A\n", ""),
 	}
 	activity, reason, err = singleUnavailable.Observe(context.Background())
 	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
@@ -251,12 +249,10 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		t.Fatalf("Aggregate() with all-N/A single GPU = %q, want %q", aggActivity, ActivityIdle)
 	}
 
-	// All-unavailable multi-GPU yields neutral idle observation
+	// All-unavailable multi-GPU with no compute app yields neutral idle observation.
 	multiUnavailable := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("N/A\n[Not Supported]\n[N/A]\n"), nil
-		}),
+		Runner: nvidiaRunner("N/A\n[Not Supported]\n[N/A]\n", ""),
 	}
 	activity, reason, err = multiUnavailable.Observe(context.Background())
 	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
@@ -271,6 +267,25 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	aggActivity, _ = Aggregate(obs)
 	if aggActivity != ActivityIdle {
 		t.Fatalf("Aggregate() with all-unavailable multi-GPU = %q, want %q", aggActivity, ActivityIdle)
+	}
+
+	// All-N/A utilization still queries compute apps. A resident app is a game.
+	unavailableGame := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: nvidiaRunner("N/A\n[Not Supported]\n", "321, python, 2048\n"),
+	}
+	activity, reason, err = unavailableGame.Observe(context.Background())
+	if err != nil || activity != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization unavailable` {
+		t.Fatalf("unavailableGame.Observe() = %q, %q, %v", activity, reason, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ = Aggregate(obs)
+	if aggActivity != ActivityGame {
+		t.Fatalf("Aggregate() with all-N/A utilization and a compute app = %q, want %q", aggActivity, ActivityGame)
 	}
 
 	// Exec error / non-zero exit degrades to unknown
@@ -397,8 +412,21 @@ func TestNVIDIAComputeAppsClassifiedSeparatelyFromUtilization(t *testing.T) {
 	}
 
 	below, reason, err := provider("5\n", "321, python, 2048\n").Observe(context.Background())
-	if err != nil || below != ActivityIdle || reason != `GPU compute app "python" (pid 321) with utilization 5% below 20% floor` {
+	if err != nil || below != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization 5% below 20% floor` {
 		t.Fatalf("below-floor compute app Observe() = %q, %q, %v", below, reason, err)
+	}
+	obs[1] = Observation{Provider: "nvidia", Activity: below, Reason: reason}
+	if agg, _ := Aggregate(obs); agg != ActivityGame {
+		t.Fatalf("Aggregate() with below-floor compute app = %q, want game", agg)
+	}
+
+	zero, reason, err := provider("0\n", "321, python, 2048\n").Observe(context.Background())
+	if err != nil || zero != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization 0% below 20% floor` {
+		t.Fatalf("zero-utilization compute app Observe() = %q, %q, %v", zero, reason, err)
+	}
+	obs[1] = Observation{Provider: "nvidia", Activity: zero, Reason: reason}
+	if agg, _ := Aggregate(obs); agg != ActivityGame {
+		t.Fatalf("Aggregate() with zero-utilization compute app = %q, want game", agg)
 	}
 
 	quiet, reason, err := provider("5\n", "\n").Observe(context.Background())

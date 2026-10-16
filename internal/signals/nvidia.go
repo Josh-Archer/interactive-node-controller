@@ -29,17 +29,8 @@ func (p NVIDIAProvider) Observe(ctx context.Context) (Activity, string, error) {
 	if err != nil {
 		return ActivityUnknown, "", err
 	}
-	if len(values) == 0 {
-		// Unsupported utilization readings stay idle and do not consult compute
-		// apps. A numeric reading is required before a compute app can be a game.
-		return ActivityIdle, "gpu utilization unavailable", nil
-	}
-	maximum := 0
-	for _, value := range values {
-		if value > maximum {
-			maximum = value
-		}
-	}
+	// A resident compute app is a game at any utilization, including 0% and
+	// non-numeric readings. Utilization with no compute app stays idle.
 	appsOutput, err := p.Runner.Run(ctx, p.Command, "--query-compute-apps=pid,process_name,used_gpu_memory", "--format=csv,noheader,nounits")
 	if err != nil {
 		return ActivityUnknown, "", fmt.Errorf("query NVIDIA compute apps: %w", err)
@@ -48,19 +39,40 @@ func (p NVIDIAProvider) Observe(ctx context.Context) (Activity, string, error) {
 	if err != nil {
 		return ActivityUnknown, "", err
 	}
-	// Utilization and compute apps are separate inputs. Desktop compositing can
-	// meet the floor without a compute app, and a resident compute app can sit
-	// below the floor. Neither one alone is a game.
-	if len(apps) > 0 && maximum >= p.UtilizationFloor {
-		return ActivityGame, computeAppReason(apps, fmt.Sprintf("utilization %d%% meeting %d%% floor", maximum, p.UtilizationFloor)), nil
-	}
+	maximum, numeric := maximumUtilization(values)
 	if len(apps) > 0 {
-		return ActivityIdle, computeAppReason(apps, fmt.Sprintf("utilization %d%% below %d%% floor", maximum, p.UtilizationFloor)), nil
+		return ActivityGame, computeAppReason(apps, utilizationDetail(numeric, maximum, p.UtilizationFloor)), nil
+	}
+	if !numeric {
+		return ActivityIdle, "gpu utilization unavailable", nil
 	}
 	if maximum >= p.UtilizationFloor {
 		return ActivityIdle, fmt.Sprintf("GPU utilization %d%% meets %d%% floor without compute apps", maximum, p.UtilizationFloor), nil
 	}
 	return ActivityIdle, fmt.Sprintf("GPU utilization %d%% below %d%% floor", maximum, p.UtilizationFloor), nil
+}
+
+func maximumUtilization(values []int) (int, bool) {
+	if len(values) == 0 {
+		return 0, false
+	}
+	maximum := 0
+	for _, value := range values {
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return maximum, true
+}
+
+func utilizationDetail(numeric bool, maximum, floor int) string {
+	if !numeric {
+		return "utilization unavailable"
+	}
+	if maximum >= floor {
+		return fmt.Sprintf("utilization %d%% meeting %d%% floor", maximum, floor)
+	}
+	return fmt.Sprintf("utilization %d%% below %d%% floor", maximum, floor)
 }
 
 func computeAppReason(apps []computeApp, utilization string) string {
