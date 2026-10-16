@@ -2,6 +2,12 @@
 node_activity_reporter_install_method: binary
 node_activity_reporter_binary_src: ""
 node_activity_reporter_package_name: ""
+# Version-pinned release download options (Renovate-compatible)
+# renovate: datasource=github-releases depName=Josh-Archer/interactive-node-controller
+node_activity_reporter_version: ""
+node_activity_reporter_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else ansible_architecture }}"
+node_activity_reporter_download_url: "https://github.com/Josh-Archer/interactive-node-controller/releases/download/{{ node_activity_reporter_version }}/node-activity-reporter-linux-{{ node_activity_reporter_arch }}"
+node_activity_reporter_checksum: ""
 node_activity_reporter_binary_path: /usr/local/bin/node-activity-reporter
 node_activity_reporter_user: nodeactivity
 node_activity_reporter_group: nodeactivity

@@ -5,8 +5,9 @@ Generic availability signaling for interactive Kubernetes workers. A host report
 This repository owns the Go controller, versioned CRD, OCI Helm chart, host reporter framework/Ansible role, tests, and immutable signed releases. Consuming environments own node selection, policy configuration, GitOps pins, and smoke checks. This project produces reusable artifacts and never directly deploys to a consumer cluster.
 
 Published releases are available as signed container images at
-`ghcr.io/josh-archer/interactive-node-controller` and OCI Helm charts at
-`oci://ghcr.io/josh-archer/charts/interactive-node-controller`. See
+`ghcr.io/josh-archer/interactive-node-controller`, OCI Helm charts at
+`oci://ghcr.io/josh-archer/charts/interactive-node-controller`, and versioned host reporter
+binaries and checksums on GitHub Releases. See
 [VERSIONING.md](VERSIONING.md) for the release contract and
 [docs/artifact-verification.md](docs/artifact-verification.md) for Cosign signature and SBOM verification.
 
@@ -69,8 +70,8 @@ rules:
 ```
 
 ### 4. Configure & Start Host Reporter
-
-Install the host reporter on the worker node using the systemd unit or Ansible role, pointing its config ([`examples/config.yaml`](examples/config.yaml)) at the cluster API server and projected token.
+ 
+Install the host reporter on the worker node by downloading a version-pinned release binary, using the systemd unit, or applying the Ansible role (`install_method: download`), pointing its config ([`examples/config.yaml`](examples/config.yaml)) at the cluster API server and projected token. See [docs/host-reporter.md](docs/host-reporter.md).
 
 
 ## Phase 1 host reporter

@@ -4,10 +4,35 @@ The host reporter turns local Linux observations into a narrow `NodeActivity`
 status heartbeat. It does not taint nodes, evict pods, mutate workloads, or
 contain a generic Kubernetes client.
 
-## Build and run
+## Download and install from GitHub Releases
+
+Published release binaries for `linux/amd64` and `linux/arm64` and their SHA-256 checksums are attached to each GitHub Release.
 
 ```bash
-make build-linux-amd64
+# Pin version and architecture
+VERSION="v0.1.5"
+ARCH="amd64" # or arm64
+
+# Download release binary and checksums
+curl -fsSLO "https://github.com/Josh-Archer/interactive-node-controller/releases/download/${VERSION}/node-activity-reporter-linux-${ARCH}"
+curl -fsSLO "https://github.com/Josh-Archer/interactive-node-controller/releases/download/${VERSION}/checksums.txt"
+
+# Verify SHA-256 checksum
+sha256sum -c --ignore-missing checksums.txt
+
+# Install binary and default configuration
+sudo install -m 0755 "node-activity-reporter-linux-${ARCH}" /usr/local/bin/node-activity-reporter
+sudo install -D -m 0640 examples/config.yaml /etc/node-activity-reporter/config.yaml
+/usr/local/bin/node-activity-reporter --version
+/usr/local/bin/node-activity-reporter --config /etc/node-activity-reporter/config.yaml --check-config
+```
+
+See [docs/artifact-verification.md](artifact-verification.md) to verify the keyless Cosign signature on `checksums.txt` or SLSA build provenance attestations via `gh attestation verify`.
+
+## Build from source
+
+```bash
+make build-linux-amd64 # or make build-linux-arm64
 sudo install -m 0755 bin/node-activity-reporter-linux-amd64 /usr/local/bin/node-activity-reporter
 sudo install -D -m 0640 examples/config.yaml /etc/node-activity-reporter/config.yaml
 /usr/local/bin/node-activity-reporter --config /etc/node-activity-reporter/config.yaml --check-config
@@ -18,9 +43,9 @@ the service in the foreground first and verify its JSON status and journal
 messages. Install `packaging/systemd/node-activity-reporter.service` only after
 creating the unprivileged `nodeactivity` service account.
 
-The Ansible role at `ansible/roles/node_activity_reporter` performs those host
-steps. It accepts either a controller-supplied binary or a package name from an
-already trusted package repository. It does not enroll a cluster identity.
+The Ansible role at `ansible/roles/node_activity_reporter` automates installation
+via version-pinned GitHub Release download (`install_method: download`), local binary,
+or trusted package manager. It does not enroll a cluster identity.
 
 ## State and signal contract
 
@@ -123,5 +148,5 @@ and rotated by a consumer-owned enrollment mechanism.
   credential is explicitly unsupported.
 - The NVIDIA signal is utilization-based, not process attribution. Leave it
   disabled unless that meaning fits the host.
-- The shipped binary target is Linux amd64. Other builds may compile but are
-  not Phase 1's supported deployment target.
+- The officially published binary targets are Linux amd64 and arm64. Other
+  builds may compile from source but are not covered by automated release testing.
