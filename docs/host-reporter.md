@@ -52,10 +52,11 @@ state is retained; the reason says that debouncing is in progress.
 
 When enabled, the reporter executes the configured absolute `loginctl` path
 with fixed argument arrays—never a shell. An active session whose type is in
-`graphical_types` reports interactive unless locked (`LockedHint=yes`); a locked session
-reports idle. If no active, unlocked graphical session exists, it reports idle. A missing
-binary, timeout, D-Bus/logind failure, or session inspection error degrades to
-unknown. Session identifiers are validated before reuse as command arguments.
+`graphical_types` reports interactive unless locked (`LockedHint=yes`) or idle
+(`IdleHint=yes`); locked or idle sessions report idle. If no active, interactive
+graphical session exists, it reports idle. A missing binary, timeout,
+D-Bus/logind failure, or session inspection error degrades to unknown. Session
+identifiers are validated before reuse as command arguments.
 
 ### Game processes
 
