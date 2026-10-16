@@ -25,7 +25,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
       - id: release
@@ -48,18 +48,18 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -68,10 +68,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}
           provenance: mode=max
           sbom: true
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
       - name: Publish image digest in the workflow summary
-        run: echo '### Container image' >> "$GITHUB_STEP_SUMMARY" && echo '\`ghcr.io/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "### Container image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`ghcr.io/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
   publish-chart:
     needs: prepare
     runs-on: ubuntu-latest
@@ -80,10 +82,10 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - run: helm lint chart && helm package chart --version '${{ needs.prepare.outputs.version }}' --app-version '${{ needs.prepare.outputs.tag }}'
       - run: echo "$CHART_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
         env:
@@ -96,23 +98,122 @@ jobs:
             helm push interactive-node-controller-${{ needs.prepare.outputs.version }}.tgz ${{ env.CHART_REPOSITORY }}
           fi
       - name: Publish chart reference in the workflow summary
-        run: echo '### Helm chart' >> "$GITHUB_STEP_SUMMARY" && echo '\`${{ env.CHART_REPOSITORY }}/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`' >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "### Helm chart" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ env.CHART_REPOSITORY }}/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+  build-reporter:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build host reporter binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ needs.prepare.outputs.tag }}" \
+            -o dist/node-activity-reporter-linux-amd64 ./cmd/node-activity-reporter
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ needs.prepare.outputs.tag }}" \
+            -o dist/node-activity-reporter-linux-arm64 ./cmd/node-activity-reporter
+      - name: Package release archives
+        run: |
+          mkdir -p dist/amd64 dist/arm64
+          cp dist/node-activity-reporter-linux-amd64 dist/amd64/node-activity-reporter
+          cp LICENSE README.md dist/amd64/
+          tar -czf dist/node-activity-reporter-linux-amd64.tar.gz -C dist/amd64 node-activity-reporter LICENSE README.md
+          rm -rf dist/amd64
+
+          cp dist/node-activity-reporter-linux-arm64 dist/arm64/node-activity-reporter
+          cp LICENSE README.md dist/arm64/
+          tar -czf dist/node-activity-reporter-linux-arm64.tar.gz -C dist/arm64 node-activity-reporter LICENSE README.md
+          rm -rf dist/arm64
+      - name: Smoke-test Linux amd64 binary
+        run: |
+          VERSION_OUTPUT="$(dist/node-activity-reporter-linux-amd64 --version)"
+          if [ "$VERSION_OUTPUT" != "${{ needs.prepare.outputs.tag }}" ]; then
+            echo "Version injection mismatch: expected ${{ needs.prepare.outputs.tag }}, got $VERSION_OUTPUT" >&2
+            exit 1
+          fi
+          dist/node-activity-reporter-linux-amd64 --config examples/config.yaml --check-config
+      - name: Verify Linux arm64 binary metadata
+        run: |
+          readelf -h dist/node-activity-reporter-linux-arm64 | grep -q 'AArch64'
+          go version -m dist/node-activity-reporter-linux-arm64 | grep -q 'GOARCH=arm64'
+      - name: Generate SHA-256 checksums
+        run: |
+          (cd dist && sha256sum \
+            node-activity-reporter-linux-amd64 \
+            node-activity-reporter-linux-arm64 \
+            node-activity-reporter-linux-amd64.tar.gz \
+            node-activity-reporter-linux-arm64.tar.gz > checksums.txt)
+          (cd dist && sha256sum -c checksums.txt)
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+      - name: Keyless sign checksums with Cosign
+        run: |
+          cosign sign-blob --yes --bundle dist/checksums.txt.bundle dist/checksums.txt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/node-activity-reporter-linux-amd64
+            dist/node-activity-reporter-linux-arm64
+            dist/node-activity-reporter-linux-amd64.tar.gz
+            dist/node-activity-reporter-linux-arm64.tar.gz
+            dist/checksums.txt
+      - name: Publish reporter artifacts in workflow summary
+        run: |
+          {
+            echo "### Host reporter artifacts"
+            echo '```'
+            cat dist/checksums.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Stash release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: host-reporter-artifacts
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
   github-release:
-    needs: [prepare, publish-image, publish-chart]
+    needs: [prepare, publish-image, publish-chart, build-reporter]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - name: Create the GitHub Release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: host-reporter-artifacts
+          path: dist
+      - name: Create or update the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "GitHub Release $RELEASE_TAG already exists."
+            if gh release download "$RELEASE_TAG" -p checksums.txt -D /tmp/existing >/dev/null 2>&1; then
+              if ! cmp -s /tmp/existing/checksums.txt dist/checksums.txt; then
+                echo "Error: Published release assets for $RELEASE_TAG differ from newly built artifacts. Immutable artifacts must not be modified." >&2
+                exit 1
+              fi
+              echo "Release assets already exist and match published checksums; retaining immutable artifacts."
+            else
+              gh release upload "$RELEASE_TAG" dist/*
+            fi
           else
-            gh release create "$RELEASE_TAG" --generate-notes --title "$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" dist/* --generate-notes --title "$RELEASE_TAG"
           fi

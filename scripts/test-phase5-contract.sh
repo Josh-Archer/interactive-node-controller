@@ -48,4 +48,46 @@ grep -q 'sbom: true' .github/workflows/release.yml
 grep -q 'helm push' .github/workflows/release.yml
 grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
 
+# Phase 5 Step 4 contract checks: Host reporter versioned release artifacts
+grep -q 'node-activity-reporter-linux-amd64' .github/workflows/release.yml
+grep -q 'node-activity-reporter-linux-arm64' .github/workflows/release.yml
+grep -q 'node-activity-reporter-linux-amd64.tar.gz' .github/workflows/release.yml
+grep -q 'node-activity-reporter-linux-arm64.tar.gz' .github/workflows/release.yml
+grep -q 'checksums.txt' .github/workflows/release.yml
+grep -q 'main.version=' .github/workflows/release.yml
+grep -q 'actions/attest-build-provenance' .github/workflows/release.yml
+grep -q 'cosign sign-blob' .github/workflows/release.yml
+grep -q 'gh release upload' .github/workflows/release.yml
+
+# Verify immutable release idempotency contract
+grep -q 'cmp -s' .github/workflows/release.yml
+
+# Verify verification runbooks for reporter artifacts
+grep -q 'Verify Host Reporter Binaries & Checksums' docs/artifact-verification.md
+grep -q 'cosign verify-blob' docs/artifact-verification.md
+grep -q 'checksums.txt.bundle' docs/artifact-verification.md
+grep -q 'gh attestation verify node-activity-reporter-linux-amd64' docs/artifact-verification.md
+grep -q 'sha256sum -c' docs/artifact-verification.md
+
+# Verify Ansible download and Renovate integration
+grep -q "node_activity_reporter_install_method == 'download'" ansible/roles/node_activity_reporter/tasks/main.yml
+grep -q 'datasource=github-releases depName=Josh-Archer/interactive-node-controller' ansible/roles/node_activity_reporter/defaults/main.yml
+grep -q 'datasource=github-releases depName=Josh-Archer/interactive-node-controller' ansible/roles/node_activity_reporter/README.md
+
+# Verify Makefile targets and version injection
+grep -q 'build-linux-arm64:' Makefile
+grep -q 'main.version=' Makefile
+
+# Contract-test local build, version injection, and smoke checks
+TMP_TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_TEST_DIR" bin' EXIT
+make VERSION=v9.9.9 build-linux-amd64 build-linux-arm64 >/dev/null
+test "$(./bin/node-activity-reporter-linux-amd64 --version)" = "v9.9.9"
+./bin/node-activity-reporter-linux-amd64 --config examples/config.yaml --check-config >/dev/null
+readelf -h ./bin/node-activity-reporter-linux-arm64 | grep -q 'AArch64'
+go version -m ./bin/node-activity-reporter-linux-arm64 | grep -q 'GOARCH=arm64'
+(cd bin && sha256sum node-activity-reporter-linux-amd64 node-activity-reporter-linux-arm64 > "$TMP_TEST_DIR/checksums.txt")
+(cd bin && sha256sum -c "$TMP_TEST_DIR/checksums.txt" >/dev/null)
+rm -rf "$TMP_TEST_DIR" bin
+
 echo 'phase 5 public release contract checks passed'
