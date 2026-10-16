@@ -3,7 +3,6 @@ package signals
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -26,7 +25,7 @@ func (p LogindProvider) Observe(ctx context.Context) (Activity, string, error) {
 	}
 	sessions := parseSessionIDs(string(output))
 	for _, session := range sessions {
-		properties, err := p.Runner.Run(ctx, p.Command, "show-session", session, "--property=Active", "--property=Type", "--property=IdleHint", "--property=IdleSinceHint", "--property=LockedHint", "--no-pager")
+		properties, err := p.Runner.Run(ctx, p.Command, "show-session", session, "--property=Active", "--property=Type", "--property=IdleHint", "--property=LockedHint", "--no-pager")
 		if err != nil {
 			return ActivityUnknown, "", fmt.Errorf("inspect logind session %s: %w", session, err)
 		}
@@ -69,7 +68,6 @@ func parseSessionProperties(output string) (bool, string, bool, bool) {
 	var active bool
 	var sessionType string
 	var idleHint bool
-	var idleSinceHint bool
 	var lockedHint bool
 	for _, line := range strings.Split(output, "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
@@ -83,13 +81,9 @@ func parseSessionProperties(output string) (bool, string, bool, bool) {
 			sessionType = strings.ToLower(value)
 		case "IdleHint":
 			idleHint = strings.EqualFold(value, "yes")
-		case "IdleSinceHint":
-			if idleSince, err := strconv.ParseUint(value, 10, 64); err == nil && idleSince > 0 {
-				idleSinceHint = true
-			}
 		case "LockedHint":
 			lockedHint = strings.EqualFold(value, "yes")
 		}
 	}
-	return active, sessionType, idleHint || idleSinceHint, lockedHint
+	return active, sessionType, idleHint, lockedHint
 }

@@ -106,9 +106,42 @@ func TestLogindIdleSinceHint(t *testing.T) {
 		properties string
 		want       Activity
 	}{
-		{name: "nonzero timestamp is idle", properties: "Active=yes\nType=wayland\nIdleSinceHint=123456\n", want: ActivityIdle},
+		{name: "IdleHint=no with nonzero timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleHint=no\nIdleSinceHint=123456\n", want: ActivityInteractive},
+		{name: "nonzero timestamp without IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=123456\n", want: ActivityInteractive},
 		{name: "zero timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=0\n", want: ActivityInteractive},
 		{name: "invalid timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=n/a\n", want: ActivityInteractive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+					return []byte("3 1000 user seat0 tty2\n"), nil
+				}
+				return []byte(test.properties), nil
+			})
+			activity, reason, err := provider.Observe(context.Background())
+			if err != nil || activity != test.want {
+				t.Fatalf("Observe() = %q, %q, %v; want %q", activity, reason, err, test.want)
+			}
+		})
+	}
+}
+
+func TestLogindIdleHintMissingAndUnknown(t *testing.T) {
+	provider := LogindProvider{
+		Command:        "/usr/bin/loginctl",
+		GraphicalTypes: map[string]struct{}{"wayland": {}},
+		Timeout:        time.Second,
+	}
+	for _, test := range []struct {
+		name       string
+		properties string
+		want       Activity
+	}{
+		{name: "missing IdleHint is interactive", properties: "Active=yes\nType=wayland\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "unknown IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleHint=unknown\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "arbitrary IdleHint value is interactive", properties: "Active=yes\nType=wayland\nIdleHint=foo\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "explicit no IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleHint=no\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "IdleHint=yes is idle", properties: "Active=yes\nType=wayland\nIdleHint=yes\nLockedHint=no\n", want: ActivityIdle},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
