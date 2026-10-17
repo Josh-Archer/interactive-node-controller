@@ -81,7 +81,8 @@ func TestLogindLockedSessionReturnsIdle(t *testing.T) {
 		t.Fatalf("expected idle for locked session, got activity=%q reason=%q err=%v", activity, reason, err)
 	}
 
-	// Active graphical session with IdleHint=yes but LockedHint=no stays interactive
+	// An active graphical session is idle when logind reports IdleHint=yes,
+	// even when it is not locked.
 	provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
 			return []byte("3 1000 user seat0 tty2\n"), nil
@@ -89,8 +90,71 @@ func TestLogindLockedSessionReturnsIdle(t *testing.T) {
 		return []byte("Active=yes\nType=wayland\nIdleHint=yes\nLockedHint=no\n"), nil
 	})
 	activity, reason, err = provider.Observe(context.Background())
-	if err != nil || activity != ActivityInteractive {
-		t.Fatalf("expected interactive when only idleHint is true without session lock, got activity=%q reason=%q err=%v", activity, reason, err)
+	if err != nil || activity != ActivityIdle {
+		t.Fatalf("expected idle when IdleHint is true without session lock, got activity=%q reason=%q err=%v", activity, reason, err)
+	}
+}
+
+func TestLogindIdleSinceHint(t *testing.T) {
+	provider := LogindProvider{
+		Command:        "/usr/bin/loginctl",
+		GraphicalTypes: map[string]struct{}{"wayland": {}},
+		Timeout:        time.Second,
+	}
+	for _, test := range []struct {
+		name       string
+		properties string
+		want       Activity
+	}{
+		{name: "IdleHint=no with nonzero timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleHint=no\nIdleSinceHint=123456\n", want: ActivityInteractive},
+		{name: "nonzero timestamp without IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=123456\n", want: ActivityInteractive},
+		{name: "zero timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=0\n", want: ActivityInteractive},
+		{name: "invalid timestamp is interactive", properties: "Active=yes\nType=wayland\nIdleSinceHint=n/a\n", want: ActivityInteractive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+					return []byte("3 1000 user seat0 tty2\n"), nil
+				}
+				return []byte(test.properties), nil
+			})
+			activity, reason, err := provider.Observe(context.Background())
+			if err != nil || activity != test.want {
+				t.Fatalf("Observe() = %q, %q, %v; want %q", activity, reason, err, test.want)
+			}
+		})
+	}
+}
+
+func TestLogindIdleHintMissingAndUnknown(t *testing.T) {
+	provider := LogindProvider{
+		Command:        "/usr/bin/loginctl",
+		GraphicalTypes: map[string]struct{}{"wayland": {}},
+		Timeout:        time.Second,
+	}
+	for _, test := range []struct {
+		name       string
+		properties string
+		want       Activity
+	}{
+		{name: "missing IdleHint is interactive", properties: "Active=yes\nType=wayland\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "unknown IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleHint=unknown\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "arbitrary IdleHint value is interactive", properties: "Active=yes\nType=wayland\nIdleHint=foo\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "explicit no IdleHint is interactive", properties: "Active=yes\nType=wayland\nIdleHint=no\nLockedHint=no\n", want: ActivityInteractive},
+		{name: "IdleHint=yes is idle", properties: "Active=yes\nType=wayland\nIdleHint=yes\nLockedHint=no\n", want: ActivityIdle},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider.Runner = runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if reflect.DeepEqual(args[:1], []string{"list-sessions"}) {
+					return []byte("3 1000 user seat0 tty2\n"), nil
+				}
+				return []byte(test.properties), nil
+			})
+			activity, reason, err := provider.Observe(context.Background())
+			if err != nil || activity != test.want {
+				t.Fatalf("Observe() = %q, %q, %v; want %q", activity, reason, err, test.want)
+			}
+		})
 	}
 }
 
@@ -143,11 +207,11 @@ func TestNVIDIAParserAndProviderDegradation(t *testing.T) {
 	}
 	provider := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) { return []byte("42\n"), nil }),
+		Runner: nvidiaRunner("42\n", "4242, python, 256\n"),
 	}
-	activity, _, err := provider.Observe(context.Background())
-	if err != nil || activity != ActivityGame {
-		t.Fatalf("Observe() = %q, %v", activity, err)
+	activity, reason, err := provider.Observe(context.Background())
+	if err != nil || activity != ActivityGame || !strings.Contains(reason, "pid 4242") {
+		t.Fatalf("Observe() = %q, %q, %v", activity, reason, err)
 	}
 	provider.Runner = runnerFunc(func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("missing") })
 	if _, _, err := provider.Observe(context.Background()); err == nil {
@@ -192,9 +256,7 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	// Mixed valid readings with idle result
 	idleProvider := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("0\nN/A\n"), nil
-		}),
+		Runner: nvidiaRunner("0\nN/A\n", ""),
 	}
 	activity, reason, err := idleProvider.Observe(context.Background())
 	if err != nil || activity != ActivityIdle {
@@ -214,9 +276,7 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	// Mixed valid readings with game result
 	gameProvider := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("85\nN/A\n"), nil
-		}),
+		Runner: nvidiaRunner("85\nN/A\n", "99, python, 1024\n"),
 	}
 	activity, reason, err = gameProvider.Observe(context.Background())
 	if err != nil || activity != ActivityGame {
@@ -233,12 +293,10 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		t.Fatalf("Aggregate() = %q, want %q", aggActivity, ActivityGame)
 	}
 
-	// All-N/A single GPU yields neutral idle observation and aggregates with idle providers to idle
+	// All-N/A single GPU with no compute app yields neutral idle and aggregates to idle.
 	singleUnavailable := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("N/A\n"), nil
-		}),
+		Runner: nvidiaRunner("N/A\n", ""),
 	}
 	activity, reason, err = singleUnavailable.Observe(context.Background())
 	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
@@ -255,12 +313,10 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 		t.Fatalf("Aggregate() with all-N/A single GPU = %q, want %q", aggActivity, ActivityIdle)
 	}
 
-	// All-unavailable multi-GPU yields neutral idle observation
+	// All-unavailable multi-GPU with no compute app yields neutral idle observation.
 	multiUnavailable := NVIDIAProvider{
 		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
-		Runner: runnerFunc(func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("N/A\n[Not Supported]\n[N/A]\n"), nil
-		}),
+		Runner: nvidiaRunner("N/A\n[Not Supported]\n[N/A]\n", ""),
 	}
 	activity, reason, err = multiUnavailable.Observe(context.Background())
 	if err != nil || activity != ActivityIdle || reason != "gpu utilization unavailable" {
@@ -275,6 +331,25 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	aggActivity, _ = Aggregate(obs)
 	if aggActivity != ActivityIdle {
 		t.Fatalf("Aggregate() with all-unavailable multi-GPU = %q, want %q", aggActivity, ActivityIdle)
+	}
+
+	// All-N/A utilization still queries compute apps. A resident app is a game.
+	unavailableGame := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: nvidiaRunner("N/A\n[Not Supported]\n", "321, python, 2048\n"),
+	}
+	activity, reason, err = unavailableGame.Observe(context.Background())
+	if err != nil || activity != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization unavailable` {
+		t.Fatalf("unavailableGame.Observe() = %q, %q, %v", activity, reason, err)
+	}
+	obs = []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: activity, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	aggActivity, _ = Aggregate(obs)
+	if aggActivity != ActivityGame {
+		t.Fatalf("Aggregate() with all-N/A utilization and a compute app = %q, want %q", aggActivity, ActivityGame)
 	}
 
 	// Exec error / non-zero exit degrades to unknown
@@ -351,6 +426,148 @@ func TestNVIDIAToleratesNonIntegerReadings(t *testing.T) {
 	}
 	if agg, _ := Aggregate(obs); agg != ActivityUnknown {
 		t.Fatalf("Aggregate() with garbage output = %q, want %q", agg, ActivityUnknown)
+	}
+}
+
+func nvidiaRunner(utilization, apps string) runnerFunc {
+	return func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) == 0 {
+			return nil, errors.New("missing nvidia-smi arguments")
+		}
+		switch args[0] {
+		case "--query-gpu=utilization.gpu":
+			return []byte(utilization), nil
+		case "--query-compute-apps=pid,process_name,used_gpu_memory":
+			return []byte(apps), nil
+		default:
+			return nil, errors.New("unexpected nvidia-smi arguments")
+		}
+	}
+}
+
+func TestNVIDIAComputeAppsClassifiedSeparatelyFromUtilization(t *testing.T) {
+	provider := func(utilization, apps string) NVIDIAProvider {
+		return NVIDIAProvider{
+			Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+			Runner: nvidiaRunner(utilization, apps),
+		}
+	}
+
+	compositor, reason, err := provider("64\n", "").Observe(context.Background())
+	if err != nil || compositor != ActivityIdle || reason != "GPU utilization 64% meets 20% floor without compute apps" {
+		t.Fatalf("compositor Observe() = %q, %q, %v", compositor, reason, err)
+	}
+	obs := []Observation{
+		{Provider: "logind", Activity: ActivityIdle, Reason: "no graphical session"},
+		{Provider: "nvidia", Activity: compositor, Reason: reason},
+		{Provider: "process", Activity: ActivityIdle, Reason: "no target processes"},
+	}
+	if agg, _ := Aggregate(obs); agg != ActivityIdle {
+		t.Fatalf("Aggregate() with compositor utilization = %q, want idle", agg)
+	}
+
+	game, reason, err := provider("64\n", "321, python, 2048\n").Observe(context.Background())
+	if err != nil || game != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization 64% meeting 20% floor` {
+		t.Fatalf("compute app Observe() = %q, %q, %v", game, reason, err)
+	}
+	obs[1] = Observation{Provider: "nvidia", Activity: game, Reason: reason}
+	if agg, _ := Aggregate(obs); agg != ActivityGame {
+		t.Fatalf("Aggregate() with compute app = %q, want game", agg)
+	}
+
+	below, reason, err := provider("5\n", "321, python, 2048\n").Observe(context.Background())
+	if err != nil || below != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization 5% below 20% floor` {
+		t.Fatalf("below-floor compute app Observe() = %q, %q, %v", below, reason, err)
+	}
+	obs[1] = Observation{Provider: "nvidia", Activity: below, Reason: reason}
+	if agg, _ := Aggregate(obs); agg != ActivityGame {
+		t.Fatalf("Aggregate() with below-floor compute app = %q, want game", agg)
+	}
+
+	zero, reason, err := provider("0\n", "321, python, 2048\n").Observe(context.Background())
+	if err != nil || zero != ActivityGame || reason != `GPU compute app "python" (pid 321) with utilization 0% below 20% floor` {
+		t.Fatalf("zero-utilization compute app Observe() = %q, %q, %v", zero, reason, err)
+	}
+	obs[1] = Observation{Provider: "nvidia", Activity: zero, Reason: reason}
+	if agg, _ := Aggregate(obs); agg != ActivityGame {
+		t.Fatalf("Aggregate() with zero-utilization compute app = %q, want game", agg)
+	}
+
+	quiet, reason, err := provider("5\n", "\n").Observe(context.Background())
+	if err != nil || quiet != ActivityIdle || reason != "GPU utilization 5% below 20% floor" {
+		t.Fatalf("quiet Observe() = %q, %q, %v", quiet, reason, err)
+	}
+
+	several, reason, err := provider("80\n", "30, high, 100\n20, mid, 500\n10, low, 500\n").Observe(context.Background())
+	if err != nil || several != ActivityGame || reason != `GPU compute app "low" (pid 10) and 2 more with utilization 80% meeting 20% floor` {
+		t.Fatalf("multi-app Observe() = %q, %q, %v", several, reason, err)
+	}
+
+	named, reason, err := provider("40\n", "7, My, Game, [N/A]\n").Observe(context.Background())
+	if err != nil || named != ActivityGame || reason != `GPU compute app "My, Game" (pid 7) with utilization 40% meeting 20% floor` {
+		t.Fatalf("comma-name Observe() = %q, %q, %v", named, reason, err)
+	}
+
+	var calls [][]string
+	recording := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(_ context.Context, command string, args ...string) ([]byte, error) {
+			if command != "/usr/bin/nvidia-smi" {
+				t.Fatalf("command = %q", command)
+			}
+			calls = append(calls, append([]string(nil), args...))
+			if len(args) > 0 && args[0] == "--query-compute-apps=pid,process_name,used_gpu_memory" {
+				return []byte("15, train, 64 MiB\n"), nil
+			}
+			return []byte("55\n"), nil
+		}),
+	}
+	activity, reason, err := recording.Observe(context.Background())
+	if err != nil || activity != ActivityGame || !strings.Contains(reason, `pid 15`) {
+		t.Fatalf("recording Observe() = %q, %q, %v", activity, reason, err)
+	}
+	wantCalls := [][]string{
+		{"--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"},
+		{"--query-compute-apps=pid,process_name,used_gpu_memory", "--format=csv,noheader,nounits"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("nvidia-smi args = %#v, want %#v", calls, wantCalls)
+	}
+
+	brokenApps := NVIDIAProvider{
+		Command: "/usr/bin/nvidia-smi", UtilizationFloor: 20, Timeout: time.Second,
+		Runner: runnerFunc(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) > 0 && strings.HasPrefix(args[0], "--query-compute-apps=") {
+				return nil, errors.New("compute query failed")
+			}
+			return []byte("90\n"), nil
+		}),
+	}
+	activity, _, err = brokenApps.Observe(context.Background())
+	if err == nil || activity != ActivityUnknown || !strings.Contains(err.Error(), "query NVIDIA compute apps") {
+		t.Fatalf("brokenApps.Observe() = %q, %v", activity, err)
+	}
+
+	for _, malformed := range []string{"not-an-app\n", "0, python, 10\n", "12, python\n", "12, , 10\n", "12, python, no-mem\n"} {
+		malformedProvider := provider("33\n", malformed)
+		activity, _, err = malformedProvider.Observe(context.Background())
+		if err == nil || activity != ActivityUnknown {
+			t.Fatalf("malformed %q Observe() = %q, %v", malformed, activity, err)
+		}
+	}
+}
+
+func TestParseComputeApps(t *testing.T) {
+	apps, err := parseComputeApps("  \n")
+	if err != nil || apps != nil {
+		t.Fatalf("empty parseComputeApps() = %#v, %v", apps, err)
+	}
+	apps, err = parseComputeApps("321, python, 2048\n15, /opt/bin/train, 64 MiB\n")
+	if err != nil || !reflect.DeepEqual(apps, []computeApp{{PID: 321, Name: "python", Memory: 2048}, {PID: 15, Name: "/opt/bin/train", Memory: 64}}) {
+		t.Fatalf("parseComputeApps() = %#v, %v", apps, err)
+	}
+	if _, err := parseComputeApps("nope\n"); err == nil {
+		t.Fatal("malformed compute app accepted")
 	}
 }
 

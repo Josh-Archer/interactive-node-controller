@@ -29,13 +29,13 @@ func (p LogindProvider) Observe(ctx context.Context) (Activity, string, error) {
 		if err != nil {
 			return ActivityUnknown, "", fmt.Errorf("inspect logind session %s: %w", session, err)
 		}
-		active, sessionType, _, lockedHint := parseSessionProperties(string(properties))
+		active, sessionType, idleHint, lockedHint := parseSessionProperties(string(properties))
 		_, graphical := p.GraphicalTypes[strings.ToLower(sessionType)]
-		if active && graphical && !lockedHint {
+		if active && graphical && !idleHint && !lockedHint {
 			return ActivityInteractive, fmt.Sprintf("active %s session %s", sessionType, session), nil
 		}
 	}
-	return ActivityIdle, "no active graphical logind session", nil
+	return ActivityIdle, "no active interactive graphical logind session", nil
 }
 
 func parseSessionIDs(output string) []string {

@@ -77,10 +77,11 @@ state is retained; the reason says that debouncing is in progress.
 
 When enabled, the reporter executes the configured absolute `loginctl` path
 with fixed argument arrays—never a shell. An active session whose type is in
-`graphical_types` reports interactive unless locked (`LockedHint=yes`); a locked session
-reports idle. If no active, unlocked graphical session exists, it reports idle. A missing
-binary, timeout, D-Bus/logind failure, or session inspection error degrades to
-unknown. Session identifiers are validated before reuse as command arguments.
+`graphical_types` reports interactive unless locked (`LockedHint=yes`) or idle
+(`IdleHint=yes`); locked or idle sessions report idle. If no active, interactive
+graphical session exists, it reports idle. A missing binary, timeout,
+D-Bus/logind failure, or session inspection error degrades to unknown. Session
+identifiers are validated before reuse as command arguments.
 
 ### Game processes
 
@@ -91,18 +92,38 @@ absolute proc root. `names` are exact `/proc/<pid>/comm` matches;
 vanishing process is ignored, while a proc root with no readable processes is
 unknown rather than idle.
 
-### NVIDIA utilization
+### NVIDIA utilization and compute apps
 
 When enabled, the reporter executes the configured absolute `nvidia-smi` path
-with fixed query arguments. Any GPU at or above the configured threshold is a
-game observation. This is deliberately opt-in because utilization is not
-universally equivalent to a game. When `nvidia-smi` executes successfully but
-every GPU reports a non-numeric unavailable reading (such as `N/A`, `[N/A]`, or
-`[Not Supported]`), the provider reports an idle observation with reason
-`gpu utilization unavailable` rather than forcing an unknown fail-closed state.
-Unavailable readings are also tolerated when valid numeric utilization readings
-are present on other GPUs. Missing tools, non-zero command exits, timeouts, empty
-query output, and garbage or out-of-range values degrade to unknown.
+twice, with fixed argument arrays and never a shell. One query reads GPU
+utilization. The other lists compute applications (`--query-compute-apps`).
+Any parsed compute application is a game observation, whatever the utilization.
+That includes 0%, readings below `utilization_floor_percent`, and a host where
+every GPU utilization reading is non-numeric. A resident compute application
+keeps the node busy. The reason names the application and the utilization so
+the observation is distinct from an empty compute-app list.
+
+Utilization at or above the floor with no compute application stays idle.
+Desktop compositing and other graphics clients can exceed the floor without
+holding a compute context. The floor only distinguishes that idle reason
+(`meets N% floor without compute apps` versus `below N% floor`). It does not
+gate a resident compute application.
+
+This signal is deliberately opt-in. A compute application is not universally
+equivalent to a game, and graphics-only clients (including games that never
+create a compute context) are not attributed here. Use the game-process signal
+for those binaries.
+
+When `nvidia-smi` executes successfully but every GPU reports a non-numeric
+unavailable utilization reading (such as `N/A`, `[N/A]`, or `[Not Supported]`),
+the provider still queries compute applications. A parsed compute application
+is a game. With no compute application, the provider reports an idle
+observation with reason `gpu utilization unavailable`. Unavailable readings are
+also tolerated when valid numeric utilization readings are present on other
+GPUs. Missing tools, non-zero command exits, timeouts, empty utilization
+output, garbage or out-of-range utilization, and unparsable compute-app rows
+degrade to unknown. An empty compute-app listing is a successful observation
+that no compute application is running.
 
 ## NodeActivity reporting API
 
@@ -146,7 +167,10 @@ and rotated by a consumer-owned enrollment mechanism.
   `NodeActivity` and status subresource.
 - Phase 1 does not create or rotate credentials. A static, long-lived broad
   credential is explicitly unsupported.
-- The NVIDIA signal is utilization-based, not process attribution. Leave it
-  disabled unless that meaning fits the host.
+- The NVIDIA signal attributes a game whenever a compute application is
+  running, including when utilization is 0%, below the floor, or unavailable.
+  Utilization at or above the floor with no compute application, including
+  desktop compositing, stays idle. Leave the signal disabled unless that
+  meaning fits the host.
 - The officially published binary targets are Linux amd64 and arm64. Other
   builds may compile from source but are not covered by automated release testing.
