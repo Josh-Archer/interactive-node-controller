@@ -1,14 +1,21 @@
-.PHONY: build-linux-amd64 build-controller fmt fmt-check test test-api test-kind vet contracts ansible-syntax chart-lint docker-build verify
+.PHONY: build-linux-amd64 build-linux-arm64 build-controller fmt fmt-check test test-api test-kind vet contracts ansible-syntax chart-lint docker-build verify
+
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
 GO_FILES := $(shell find . -name '*.go' -type f -not -path './vendor/*')
 
 build-linux-amd64:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o bin/node-activity-reporter-linux-amd64 ./cmd/node-activity-reporter
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/node-activity-reporter-linux-amd64 ./cmd/node-activity-reporter
+
+build-linux-arm64:
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/node-activity-reporter-linux-arm64 ./cmd/node-activity-reporter
 
 build-controller:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o bin/interactive-node-controller-linux-amd64 ./cmd/interactive-node-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/interactive-node-controller-linux-amd64 ./cmd/interactive-node-controller
 
 fmt:
 	gofmt -w $(GO_FILES)

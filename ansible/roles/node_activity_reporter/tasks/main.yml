@@ -2,13 +2,15 @@
 - name: Validate node activity reporter installation inputs
   ansible.builtin.assert:
     that:
-      - node_activity_reporter_install_method in ['binary', 'package']
+      - node_activity_reporter_install_method in ['binary', 'package', 'download']
       - node_activity_reporter_install_method != 'binary' or node_activity_reporter_binary_src | length > 0
       - node_activity_reporter_install_method != 'package' or node_activity_reporter_package_name | length > 0
+      - node_activity_reporter_install_method != 'download' or node_activity_reporter_version | length > 0
       - node_activity_reporter_config.agent.fail_closed | bool
     fail_msg: >-
-      Select binary with node_activity_reporter_binary_src or package with
-      node_activity_reporter_package_name; Phase 1 requires fail_closed=true.
+      Select binary with node_activity_reporter_binary_src, package with
+      node_activity_reporter_package_name, or download with
+      node_activity_reporter_version; Phase 1 requires fail_closed=true.
 
 - name: Create node activity reporter group
   ansible.builtin.group:
@@ -38,6 +40,17 @@
     name: "{{ node_activity_reporter_package_name }}"
     state: present
   when: node_activity_reporter_install_method == 'package'
+  notify: Restart node activity reporter
+
+- name: Download reporter binary from release
+  ansible.builtin.get_url:
+    url: "{{ node_activity_reporter_download_url }}"
+    dest: "{{ node_activity_reporter_binary_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "{{ ('sha256:' + node_activity_reporter_checksum) if (node_activity_reporter_checksum | length > 0 and not node_activity_reporter_checksum.startswith('sha256:')) else (node_activity_reporter_checksum if node_activity_reporter_checksum | length > 0 else omit) }}"
+  when: node_activity_reporter_install_method == 'download'
   notify: Restart node activity reporter
 
 - name: Create reporter configuration directory
