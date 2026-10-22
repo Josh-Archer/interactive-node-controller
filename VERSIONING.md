@@ -31,9 +31,11 @@ helm upgrade --install interactive-node-controller \
   --values examples/helm-values.yaml
 ```
 
-Published container images and OCI Helm charts are publicly accessible and do
-not require registry authentication to pull. Private forks or custom mirrors
-can configure standard Kubernetes `imagePullSecrets`.
+Container images and OCI Helm charts are intended to be publicly accessible
+without registry authentication. If a package is private, an owner must change
+its visibility in GitHub Packages settings before anonymous pulls will work.
+Private forks or custom mirrors can configure standard Kubernetes
+`imagePullSecrets`.
 
 Host reporter binaries are published as immutable release assets on GitHub
 Releases:

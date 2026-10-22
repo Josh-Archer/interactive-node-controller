@@ -46,6 +46,10 @@ grep -q 'cosign sign --yes' .github/workflows/release.yml
 grep -q 'provenance: mode=max' .github/workflows/release.yml
 grep -q 'sbom: true' .github/workflows/release.yml
 grep -q 'helm push' .github/workflows/release.yml
+grep -q 'packages: write' .github/workflows/release.yml
+grep -q 'org.opencontainers.image.source=https://github.com/' .github/workflows/release.yml
+grep -q 'org.opencontainers.image.source: https://github.com/Josh-Archer/interactive-node-controller' chart/Chart.yaml
+grep -q 'gh release view .*--repo "\$GITHUB_REPOSITORY"' .github/workflows/release.yml
 grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
 
 # Phase 5 Step 4 contract checks: Host reporter versioned release artifacts
