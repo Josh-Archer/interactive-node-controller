@@ -52,6 +52,18 @@ type NodeActivitySpec struct {
 	// NodeName is the exact Kubernetes Node whose interactive availability is
 	// managed for this enrollment.
 	NodeName string `json:"nodeName"`
+	// Windows describe recurring local-time availability windows.
+	Windows []AvailabilityWindow `json:"windows,omitempty"`
+	// LeadTime is how long before a window starts to apply its taint.
+	LeadTime string `json:"leadTime,omitempty"`
+}
+
+// AvailabilityWindow describes a recurring availability state.
+type AvailabilityWindow struct {
+	Schedule string `json:"schedule"`
+	Duration string `json:"duration"`
+	TimeZone string `json:"timeZone,omitempty"`
+	State    string `json:"state"`
 }
 
 // ManagedTaintStatus makes the controller's dynamic ownership observable
@@ -95,6 +107,9 @@ type NodeActivityList struct {
 func (in *NodeActivity) DeepCopyInto(out *NodeActivity) {
 	*out = *in
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	if in.Spec.Windows != nil {
+		out.Spec.Windows = append([]AvailabilityWindow(nil), in.Spec.Windows...)
+	}
 	if in.Status.Conditions != nil {
 		out.Status.Conditions = make([]metav1.Condition, len(in.Status.Conditions))
 		copy(out.Status.Conditions, in.Status.Conditions)

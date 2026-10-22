@@ -22,6 +22,32 @@ queue, and kubelet heartbeats keep their existing reconcile schedule. Node
 create and delete events also enqueue those enrollments, which applies
 protection when a Node appears and records `NodeNotFound` when it disappears.
 
+## Scheduled availability windows
+
+An enrollment may set `spec.windows` to recurring five-field cron schedules,
+with a Go duration, an IANA `timeZone` (UTC when omitted), and state `game`,
+`interactive`, or `idle-allowed`. `spec.leadTime` applies each window's taint
+before it opens. Stale-heartbeat fail-closed handling takes precedence; otherwise
+a live game wins, then a scheduled window, then live interactive activity, then
+idle. For example:
+
+```yaml
+spec:
+  nodeName: workstation-1
+  leadTime: 30m
+  windows:
+    - schedule: "0 20 * * 5,6"
+      duration: 4h
+      timeZone: America/New_York
+      state: game
+```
+
+For an ad-hoc session, set the NodeActivity annotation
+`availability.interactive-node.io/hold: "2h"`. The controller anchors the
+duration when first observed, applies the interactive taint while it is valid,
+and removes the annotation when it expires. Metrics `inc_window_active` and
+`inc_next_window_start_timestamp_seconds` report window state and the next start.
+
 Keep exactly one live `NodeActivity` enrollment per Node. If multiple objects
 across any namespaces target the same Node, the controller conservatively
 aggregates their contributions: fresh active-game `NoSchedule` wins, followed

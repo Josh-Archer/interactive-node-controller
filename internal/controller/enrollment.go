@@ -19,6 +19,8 @@ type enrollmentProtection struct {
 	reason       string
 	requeueAfter time.Duration
 	count        int
+	scheduled    bool
+	nextWindow   time.Time
 }
 
 // Aggregate every live enrollment across namespaces. Ordering makes equal
@@ -43,7 +45,10 @@ func (r *NodeActivityReconciler) protectionForNode(ctx context.Context, nodeName
 			continue
 		}
 		result.count++
-		taint, reason, delay := r.desiredTaint(item, now)
+		taint, reason, delay, scheduled, nextWindow, err := r.desiredTaint(item, now)
+		if err != nil {
+			return enrollmentProtection{}, err
+		}
 		if delay > 0 && (result.requeueAfter == 0 || delay < result.requeueAfter) {
 			result.requeueAfter = delay
 		}
@@ -60,6 +65,7 @@ func (r *NodeActivityReconciler) protectionForNode(ctx context.Context, nodeName
 		if rank > best {
 			best = rank
 			result.taint, result.source, result.reason = taint, item, reason
+			result.scheduled, result.nextWindow = scheduled, nextWindow
 		}
 	}
 	if result.count > 1 {

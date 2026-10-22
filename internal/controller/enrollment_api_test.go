@@ -50,7 +50,7 @@ func TestEnrollmentAPIIntegration(t *testing.T) {
 	// directly, independent of the controller's fake-client contract tests.
 	contract := &availabilityv1alpha1.NodeActivity{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "api-contract"},
-		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop"},
+		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop", LeadTime: "15m", Windows: []availabilityv1alpha1.AvailabilityWindow{{Schedule: "0 20 * * *", Duration: "2h", TimeZone: "America/New_York", State: "game"}}},
 		Status:     availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateActive},
 	}
 	if err := direct.Create(context.Background(), contract); err != nil {
