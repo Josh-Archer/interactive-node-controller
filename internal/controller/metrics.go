@@ -3,6 +3,7 @@ package controller
 import (
 	"strings"
 	"sync"
+	"time"
 
 	availabilityv1alpha1 "github.com/Josh-Archer/interactive-node-controller/api/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,9 @@ var (
 		Help: "Whether this controller is standing down (1) or applying managed taints/fail-closed (0).",
 	}, []string{"node"})
 
+	windowActiveMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "inc_window_active", Help: "Whether an availability window or its lead-time taint is active."}, []string{"node"})
+	nextWindowMetric   = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "inc_next_window_start_timestamp_seconds", Help: "Unix timestamp of the next scheduled availability window."}, []string{"node"})
+
 	metricsMu    sync.Mutex
 	lastActivity = make(map[string]activityMetricLabels)
 	lastTaint    = make(map[string]taintMetricLabels)
@@ -43,7 +47,26 @@ type taintMetricLabels struct {
 }
 
 func init() {
-	metrics.Registry.MustRegister(activityMetric, taintMetric, schedulableMetric)
+	metrics.Registry.MustRegister(activityMetric, taintMetric, schedulableMetric, windowActiveMetric, nextWindowMetric)
+}
+
+func observeWindowMetrics(nodeName string, active bool, next time.Time) {
+	if strings.TrimSpace(nodeName) == "" {
+		return
+	}
+	windowActiveMetric.WithLabelValues(nodeName).Set(boolGauge(active))
+	if next.IsZero() {
+		nextWindowMetric.DeleteLabelValues(nodeName)
+	} else {
+		nextWindowMetric.WithLabelValues(nodeName).Set(float64(next.Unix()))
+	}
+}
+
+func boolGauge(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, activity availabilityv1alpha1.Activity, desired *corev1.Taint, fresh bool) {
@@ -109,6 +132,8 @@ func clearNodeMetrics(nodeName string) {
 		delete(lastTaint, nodeName)
 	}
 	schedulableMetric.DeleteLabelValues(nodeName)
+	windowActiveMetric.DeleteLabelValues(nodeName)
+	nextWindowMetric.DeleteLabelValues(nodeName)
 }
 
 func resetMetricsForTesting() {
@@ -118,6 +143,8 @@ func resetMetricsForTesting() {
 	activityMetric.Reset()
 	taintMetric.Reset()
 	schedulableMetric.Reset()
+	windowActiveMetric.Reset()
+	nextWindowMetric.Reset()
 	lastActivity = make(map[string]activityMetricLabels)
 	lastTaint = make(map[string]taintMetricLabels)
 }

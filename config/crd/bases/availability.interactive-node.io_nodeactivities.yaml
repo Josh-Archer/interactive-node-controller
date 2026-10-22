@@ -35,6 +35,22 @@ spec:
                   maxLength: 253
                   pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
                   description: Exact Kubernetes Node name enrolled by GitOps.
+                leadTime:
+                  type: string
+                  pattern: '^([0-9]+(ns|us|µs|ms|s|m|h))+$'
+                  description: Duration before a window starts to apply its managed taint.
+                windows:
+                  type: array
+                  items:
+                    type: object
+                    required: [schedule, duration, state]
+                    properties:
+                      schedule: {type: string, minLength: 1}
+                      duration:
+                        type: string
+                        pattern: '^([0-9]+(ns|us|µs|ms|s|m|h))+$'
+                      timeZone: {type: string}
+                      state: {type: string, enum: [interactive, game, idle-allowed]}
             status:
               type: object
               properties:

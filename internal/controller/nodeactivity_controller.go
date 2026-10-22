@@ -26,6 +26,8 @@ const (
 	TaintAppliedCondition = "TaintApplied"
 	NodeActivityFinalizer = "availability.interactive-node.io/cleanup"
 	SchedulableNodeLabel  = "availability.interactive-node.io/schedulable"
+	HoldAnnotation        = "availability.interactive-node.io/hold"
+	holdStartAnnotation   = "availability.interactive-node.io/hold-start"
 )
 
 // TaintPolicy is deliberately small: one controller instance owns one primary taint
@@ -98,10 +100,14 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	}
 
 	now := r.clock().Now()
+	if err := r.reconcileHold(ctx, activity, now); err != nil {
+		return ctrl.Result{}, err
+	}
 	protection, err := r.protectionForNode(ctx, activity.Spec.NodeName, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	observeWindowMetrics(activity.Spec.NodeName, protection.scheduled, protection.nextWindow)
 	desired, reason, requeueAfter := protection.taint, protection.reason, protection.requeueAfter
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
@@ -136,6 +142,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		}
 	}
 	conditionStatus, conditionReason := metav1.ConditionTrue, "TaintReconciled"
+	if protection.scheduled {
+		conditionReason = "ScheduledWindow"
+	}
 	if protection.count > 1 {
 		conditionStatus, conditionReason = metav1.ConditionFalse, "DuplicateEnrollment"
 	}
@@ -214,6 +223,7 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	if protection.source == nil {
 		clearNodeMetrics(nodeName)
 	} else {
+		observeWindowMetrics(nodeName, protection.scheduled, protection.nextWindow)
 		fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
 		observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, fresh)
 	}
@@ -256,10 +266,15 @@ func (r *NodeActivityReconciler) clock() clock.Clock {
 	return clock.RealClock{}
 }
 
-func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.NodeActivity, now time.Time) (*corev1.Taint, string, time.Duration) {
+func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.NodeActivity, now time.Time) (*corev1.Taint, string, time.Duration, bool, time.Time, error) {
+	window, nextWindow, windowWait, windowErr := evaluateWindows(activity.Spec, now)
+	if windowErr != nil {
+		return nil, "", 0, false, time.Time{}, windowErr
+	}
 	stale := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
 	if stale {
-		return r.failClosed("host heartbeat is missing or stale")
+		t, m, d := r.failClosed("host heartbeat is missing or stale")
+		return t, m, minPositive(d, windowWait), false, nextWindow, nil
 	}
 	remaining := activity.Status.HeartbeatAt.Add(r.Policy.StaleAfter).Sub(now)
 	if remaining <= 0 {
@@ -267,20 +282,108 @@ func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.Nod
 	}
 	switch activity.Status.State {
 	case availabilityv1alpha1.StateIdle:
-		return nil, "host is idle; managed taint removed", remaining
+		if holdUntil := holdExpiry(activity); holdUntil.After(now) {
+			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "time-boxed availability hold", minPositive(remaining, holdUntil.Sub(now)), false, nextWindow, nil
+		}
+		if window != nil {
+			switch window.state {
+			case "game":
+				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "scheduled game window", minPositive(remaining, windowWait), true, nextWindow, nil
+			case "interactive":
+				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "scheduled interactive window", minPositive(remaining, windowWait), true, nextWindow, nil
+			default:
+				return nil, "scheduled idle-allowed window", minPositive(remaining, windowWait), true, nextWindow, nil
+			}
+		}
+		return nil, "host is idle; managed taint removed", minPositive(remaining, windowWait), false, nextWindow, nil
 	case availabilityv1alpha1.StateActive:
 		if activity.Status.Activity == availabilityv1alpha1.ActivityGame {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "host is running an active game", remaining
+			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "host is running an active game", minPositive(remaining, windowWait), false, nextWindow, nil
+		}
+		if holdUntil := holdExpiry(activity); holdUntil.After(now) {
+			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "time-boxed availability hold", minPositive(remaining, holdUntil.Sub(now)), false, nextWindow, nil
+		}
+		if window != nil {
+			if window.state == "game" {
+				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "scheduled game window", minPositive(remaining, windowWait), true, nextWindow, nil
+			}
+			if window.state == "idle-allowed" {
+				return nil, "scheduled idle-allowed window", minPositive(remaining, windowWait), true, nextWindow, nil
+			}
 		}
 		if activity.Status.Activity == availabilityv1alpha1.ActivityInteractive {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "host is interactive", remaining
+			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "host is interactive", minPositive(remaining, windowWait), false, nextWindow, nil
 		}
-		return r.failClosed("active state has an unsupported activity")
+		t, m, d := r.failClosed("active state has an unsupported activity")
+		return t, m, minPositive(d, windowWait), false, nextWindow, nil
 	case availabilityv1alpha1.StateUnknown, availabilityv1alpha1.StateStale:
-		return r.failClosed("host state is unknown or stale")
+		t, m, d := r.failClosed("host state is unknown or stale")
+		return t, m, minPositive(d, windowWait), false, nextWindow, nil
 	default:
-		return r.failClosed("host reported an unsupported state")
+		t, m, d := r.failClosed("host reported an unsupported state")
+		return t, m, minPositive(d, windowWait), false, nextWindow, nil
 	}
+}
+
+func minPositive(a, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
+func holdExpiry(activity *availabilityv1alpha1.NodeActivity) time.Time {
+	if activity.Annotations == nil || activity.Annotations[HoldAnnotation] == "" {
+		return time.Time{}
+	}
+	duration, err := time.ParseDuration(activity.Annotations[HoldAnnotation])
+	if err != nil || duration <= 0 {
+		return time.Time{}
+	}
+	start, err := time.Parse(time.RFC3339Nano, activity.Annotations[holdStartAnnotation])
+	if err != nil {
+		return time.Time{}
+	}
+	return start.Add(duration)
+}
+
+// reconcileHold anchors duration-based overrides once, then removes both
+// annotations when their time box expires.
+func (r *NodeActivityReconciler) reconcileHold(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, now time.Time) error {
+	value := ""
+	if activity.Annotations != nil {
+		value = activity.Annotations[HoldAnnotation]
+	}
+	if value == "" {
+		if activity.Annotations == nil || activity.Annotations[holdStartAnnotation] == "" {
+			return nil
+		}
+		before := activity.DeepCopy()
+		delete(activity.Annotations, holdStartAnnotation)
+		return r.Patch(ctx, activity, client.MergeFrom(before))
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return fmt.Errorf("annotation %s must be a positive duration", HoldAnnotation)
+	}
+	if activity.Annotations[holdStartAnnotation] == "" {
+		before := activity.DeepCopy()
+		if activity.Annotations == nil {
+			activity.Annotations = make(map[string]string)
+		}
+		activity.Annotations[holdStartAnnotation] = now.UTC().Format(time.RFC3339Nano)
+		return r.Patch(ctx, activity, client.MergeFrom(before))
+	}
+	if !holdExpiry(activity).After(now) {
+		before := activity.DeepCopy()
+		delete(activity.Annotations, HoldAnnotation)
+		delete(activity.Annotations, holdStartAnnotation)
+		return r.Patch(ctx, activity, client.MergeFrom(before))
+	}
+	return nil
 }
 
 func (r *NodeActivityReconciler) failClosed(message string) (*corev1.Taint, string, time.Duration) {
