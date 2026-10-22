@@ -64,6 +64,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}
           provenance: mode=max
@@ -203,17 +205,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "GitHub Release $RELEASE_TAG already exists."
-            if gh release download "$RELEASE_TAG" -p checksums.txt -D /tmp/existing >/dev/null 2>&1; then
+            if gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" -p checksums.txt -D /tmp/existing >/dev/null 2>&1; then
               if ! cmp -s /tmp/existing/checksums.txt dist/checksums.txt; then
                 echo "Error: Published release assets for $RELEASE_TAG differ from newly built artifacts. Immutable artifacts must not be modified." >&2
                 exit 1
               fi
               echo "Release assets already exist and match published checksums; retaining immutable artifacts."
             else
-              gh release upload "$RELEASE_TAG" dist/*
+              gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
             fi
           else
-            gh release create "$RELEASE_TAG" dist/* --generate-notes --title "$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" dist/* --generate-notes --title "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
           fi

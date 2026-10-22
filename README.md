@@ -4,10 +4,18 @@ Generic availability signaling for interactive Kubernetes workers. A host report
 
 This repository owns the Go controller, versioned CRD, OCI Helm chart, host reporter framework/Ansible role, tests, and immutable signed releases. Consuming environments own node selection, policy configuration, GitOps pins, and smoke checks. This project produces reusable artifacts and never directly deploys to a consumer cluster.
 
-Published releases are available as signed container images at
+Published releases are available as signed multi-architecture container images at
 `ghcr.io/josh-archer/interactive-node-controller`, OCI Helm charts at
 `oci://ghcr.io/josh-archer/charts/interactive-node-controller`, and versioned host reporter
-binaries and checksums on GitHub Releases. See
+binaries and checksums on [GitHub Releases](https://github.com/Josh-Archer/interactive-node-controller/releases).
+Pull a specific immutable release version with Docker and Helm:
+
+```bash
+docker pull ghcr.io/josh-archer/interactive-node-controller:<VERSION>
+helm pull oci://ghcr.io/josh-archer/charts/interactive-node-controller --version <VERSION>
+```
+
+These packages are intended for unauthenticated pulls once their GHCR visibility is public. See
 [VERSIONING.md](VERSIONING.md) for the release contract and
 [docs/artifact-verification.md](docs/artifact-verification.md) for Cosign signature and SBOM verification.
 
@@ -30,7 +38,7 @@ Install the controller into your cluster from the public OCI registry, pinning t
 ```bash
 helm upgrade --install interactive-node-controller \
   oci://ghcr.io/josh-archer/charts/interactive-node-controller \
-  --version 0.1.0 \
+  --version <VERSION> \
   --namespace interactive-node-controller \
   --create-namespace \
   --set image.digest="sha256:40b00ee4215d468c019ebc41d944c630baaf39ffe7364353274d5a44dafa22b5"
