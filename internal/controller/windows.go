@@ -9,88 +9,199 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+// maxWindowOccurrences bounds how many past cron activations one window may
+// visit. A long duration combined with a frequent schedule is rejected so
+// reconciliation cannot stall walking schedule.Next.
+const maxWindowOccurrences = 4096
+
 type scheduledWindow struct {
 	state string
 	start time.Time
 	end   time.Time
 }
 
-// evaluateWindows returns the strongest active window, or the next window
-// whose lead time has begun. Cron expressions use the standard five fields.
-func evaluateWindows(spec availabilityv1alpha1.NodeActivitySpec, now time.Time) (*scheduledWindow, time.Time, time.Duration, error) {
-	var active *scheduledWindow
-	var next time.Time
-	var wake time.Time
-	lead := time.Duration(0)
+type parsedWindow struct {
+	expr     string
+	label    string
+	state    string
+	schedule cron.Schedule
+	duration time.Duration
+	loc      *time.Location
+}
+
+// validateSchedule reports every leadTime and window field that cannot be
+// evaluated. An empty schedule is valid. Callers must not apply windows when
+// this returns an error.
+func validateSchedule(spec availabilityv1alpha1.NodeActivitySpec) error {
+	_, _, err := parseSchedule(spec)
+	return err
+}
+
+// parseSchedule validates spec.leadTime and every window, then returns the
+// compiled schedule only when every field is valid.
+func parseSchedule(spec availabilityv1alpha1.NodeActivitySpec) (time.Duration, []parsedWindow, error) {
+	var problems []string
+	var lead time.Duration
 	if spec.LeadTime != "" {
-		var err error
-		lead, err = time.ParseDuration(spec.LeadTime)
-		if err != nil || lead < 0 {
-			return nil, time.Time{}, 0, fmt.Errorf("spec.leadTime must be a non-negative duration")
+		parsed, err := time.ParseDuration(spec.LeadTime)
+		if err != nil || parsed < 0 {
+			problems = append(problems, fmt.Sprintf("spec.leadTime %q must be a non-negative duration", spec.LeadTime))
+		} else {
+			lead = parsed
 		}
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	for _, w := range spec.Windows {
+	windows := make([]parsedWindow, 0, len(spec.Windows))
+	for i, w := range spec.Windows {
+		valid := true
 		schedule, err := parser.Parse(w.Schedule)
 		if err != nil {
-			return nil, time.Time{}, 0, fmt.Errorf("invalid window schedule %q: %w", w.Schedule, err)
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].schedule %q is not a valid five-field cron expression: %v", i, w.Schedule, err))
 		}
 		duration, err := time.ParseDuration(w.Duration)
 		if err != nil || duration <= 0 {
-			return nil, time.Time{}, 0, fmt.Errorf("window duration must be positive")
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].duration %q must be a positive duration", i, w.Duration))
 		}
-		if w.State != "game" && w.State != "interactive" && w.State != "idle-allowed" {
-			return nil, time.Time{}, 0, fmt.Errorf("window state must be game, interactive, or idle-allowed")
+		switch w.State {
+		case "game", "interactive", "idle-allowed":
+		default:
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].state %q must be game, interactive, or idle-allowed", i, w.State))
 		}
 		loc := time.UTC
 		if w.TimeZone != "" {
-			loc, err = time.LoadLocation(w.TimeZone)
-			if err != nil {
-				return nil, time.Time{}, 0, fmt.Errorf("invalid window timeZone %q: %w", w.TimeZone, err)
+			loaded, locErr := time.LoadLocation(w.TimeZone)
+			if locErr != nil {
+				valid = false
+				problems = append(problems, fmt.Sprintf("spec.windows[%d].timeZone %q is not a valid IANA time zone: %v", i, w.TimeZone, locErr))
+			} else {
+				loc = loaded
 			}
 		}
-		localNow := now.In(loc)
-		// Scan starts in the duration immediately preceding now. A cron tick at
-		// the exact lower bound is included by advancing one nanosecond earlier.
-		cursor := localNow.Add(-duration).Add(-time.Nanosecond)
-		for start := schedule.Next(cursor); !start.After(localNow); start = schedule.Next(start) {
-			end := start.Add(duration)
-			if localNow.Before(end) {
-				if wake.IsZero() || end.Before(wake) {
-					wake = end
-				}
-				candidate := &scheduledWindow{state: w.State, start: start, end: end}
-				if active == nil || windowRank(candidate.state) > windowRank(active.state) || (windowRank(candidate.state) == windowRank(active.state) && candidate.end.Before(active.end)) {
-					active = candidate
-				}
-			}
+		if valid {
+			windows = append(windows, parsedWindow{expr: w.Schedule, label: w.Duration, state: w.State, schedule: schedule, duration: duration, loc: loc})
 		}
-		upcoming := schedule.Next(localNow)
+	}
+	if len(problems) > 0 {
+		return 0, nil, fmt.Errorf("%s", strings.Join(problems, "; "))
+	}
+	return lead, windows, nil
+}
+
+// evaluateWindows returns the strongest open window, including one whose lead
+// time has begun, the next window start, and the wait until the earliest
+// lead-time, start, or end boundary. The schedule is validated by
+// parseSchedule first: an invalid leadTime, cron expression, duration, state,
+// or time zone returns an error and no window.
+func evaluateWindows(spec availabilityv1alpha1.NodeActivitySpec, now time.Time) (*scheduledWindow, time.Time, time.Duration, error) {
+	lead, windows, err := parseSchedule(spec)
+	if err != nil {
+		return nil, time.Time{}, 0, err
+	}
+	var active *scheduledWindow
+	var next time.Time
+	var wake time.Time
+	for _, w := range windows {
+		opened, upcoming, boundary, scanErr := scanWindow(w.expr, w.label, w.state, w.schedule, now.In(w.loc), w.duration, lead)
+		if scanErr != nil {
+			return nil, time.Time{}, 0, scanErr
+		}
+		active = preferOpenWindow(active, opened)
 		if next.IsZero() || upcoming.Before(next) {
 			next = upcoming
 		}
-		if lead > 0 && !localNow.Before(upcoming.Add(-lead)) && localNow.Before(upcoming) {
-			if wake.IsZero() || upcoming.Before(wake) {
-				wake = upcoming
-			}
-			candidate := &scheduledWindow{state: w.State, start: upcoming, end: upcoming.Add(duration)}
-			if active == nil || windowRank(candidate.state) > windowRank(active.state) {
-				active = candidate
-			}
-		}
+		wake = earlierTime(wake, boundary)
 	}
-	var wait time.Duration
-	if !wake.IsZero() {
-		wait = wake.Sub(now)
+	if wake.IsZero() {
+		return active, next, 0, nil
 	}
-	if !next.IsZero() && (wait <= 0 || next.Sub(now) < wait) {
-		wait = next.Sub(now)
-	}
-	if wait > 0 {
-	} else if !next.IsZero() {
-		wait = time.Second
+	wait := wake.Sub(now)
+	if wait <= 0 {
+		return nil, time.Time{}, 0, fmt.Errorf("window schedule did not advance the requeue time")
 	}
 	return active, next, wait, nil
+}
+
+// scanWindow walks occurrences that can still be open and the next lead-time
+// boundary. Ends are exclusive: a start exactly duration ago is not open.
+func scanWindow(expr, durationLabel, state string, schedule cron.Schedule, localNow time.Time, duration, lead time.Duration) (*scheduledWindow, time.Time, time.Time, error) {
+	cursor := localNow.Add(-duration)
+	var active *scheduledWindow
+	var wake time.Time
+	steps := 0
+	var upcoming time.Time
+	for {
+		start, err := nextActivation(expr, schedule, cursor)
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, err
+		}
+		if start.After(localNow) {
+			upcoming = start
+			break
+		}
+		steps++
+		if steps > maxWindowOccurrences {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("window schedule %q with duration %s exceeds %d occurrences; shorten the duration or use a less frequent schedule", expr, durationLabel, maxWindowOccurrences)
+		}
+		end := start.Add(duration)
+		if localNow.Before(end) {
+			wake = earlierTime(wake, end)
+			active = preferOpenWindow(active, &scheduledWindow{state: state, start: start, end: end})
+		}
+		cursor = start
+	}
+	// The upcoming start is always a boundary. When lead time is set, the
+	// earliest future lead boundary can belong to a later occurrence than the
+	// one Next(now) returns, so anchor that search at now+lead.
+	wake = earlierTime(wake, upcoming)
+	if lead > 0 {
+		anchor, err := nextActivation(expr, schedule, localNow.Add(lead))
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, err
+		}
+		leadBoundary := anchor.Add(-lead)
+		if !leadBoundary.After(localNow) {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("window schedule %q lead time did not advance past %s", expr, localNow.Format(time.RFC3339Nano))
+		}
+		wake = earlierTime(wake, leadBoundary)
+		if !localNow.Before(upcoming.Add(-lead)) && localNow.Before(upcoming) {
+			active = preferOpenWindow(active, &scheduledWindow{state: state, start: upcoming, end: upcoming.Add(duration)})
+		}
+	}
+	return active, upcoming, wake, nil
+}
+
+func nextActivation(expr string, schedule cron.Schedule, after time.Time) (time.Time, error) {
+	next := schedule.Next(after)
+	if next.IsZero() {
+		return time.Time{}, fmt.Errorf("window schedule %q has no occurrence within the supported horizon", expr)
+	}
+	if !next.After(after) {
+		return time.Time{}, fmt.Errorf("window schedule %q did not advance past %s", expr, after.Format(time.RFC3339Nano))
+	}
+	return next, nil
+}
+
+func earlierTime(current, candidate time.Time) time.Time {
+	if candidate.IsZero() {
+		return current
+	}
+	if current.IsZero() || candidate.Before(current) {
+		return candidate
+	}
+	return current
+}
+
+func preferOpenWindow(current, candidate *scheduledWindow) *scheduledWindow {
+	if candidate == nil {
+		return current
+	}
+	if current == nil || windowRank(candidate.state) > windowRank(current.state) || (windowRank(candidate.state) == windowRank(current.state) && candidate.end.Before(current.end)) {
+		return candidate
+	}
+	return current
 }
 
 func windowRank(state string) int {
