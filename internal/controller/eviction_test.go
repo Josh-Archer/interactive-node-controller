@@ -276,8 +276,7 @@ func evictionFixture(t *testing.T, state availabilityv1alpha1.State, activityTyp
 	if err := appsv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).
 		WithIndex(&corev1.Pod{}, PodNodeNameKey, IndexPodNodeName).
 		WithStatusSubresource(activity).
 		WithRuntimeObjects(objects...).
@@ -511,7 +510,7 @@ func TestEvictionFailsWhenIndexMissing(t *testing.T) {
 	_ = availabilityv1alpha1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	// Build fake client deliberately WITHOUT WithIndex
+	// Build fake client deliberately WITHOUT the Pod spec.nodeName index.
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(activity).

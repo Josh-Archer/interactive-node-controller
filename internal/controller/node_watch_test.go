@@ -226,7 +226,7 @@ func fakeClient(t *testing.T, objects ...client.Object) client.Client {
 	if err := availabilityv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&availabilityv1alpha1.NodeActivity{}).WithObjects(objects...).Build()
+	return indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(&availabilityv1alpha1.NodeActivity{}).WithObjects(objects...).Build()
 }
 
 func requestKeys(requests []ctrl.Request) map[string]bool {

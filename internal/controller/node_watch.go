@@ -22,7 +22,7 @@ func (r *NodeActivityReconciler) requestsForEnrolledNode(ctx context.Context, ob
 		return nil
 	}
 	var enrollments availabilityv1alpha1.NodeActivityList
-	if err := r.List(ctx, &enrollments); err != nil {
+	if err := r.List(ctx, &enrollments, client.MatchingFields{NodeActivityNodeNameKey: node.Name}); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "list NodeActivity enrollments for node watch", "node", node.Name)
 		return nil
 	}

@@ -81,6 +81,9 @@ type NodeActivityReconciler struct {
 	Evictor  EvictionClient
 	Clock    clock.Clock
 	retries  evictionRetries
+	// controllerName overrides the generated controller name when several
+	// managers are started in one process.
+	controllerName string
 }
 
 func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -260,7 +263,10 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	return nil
 }
 
-const PodNodeNameKey = "spec.nodeName"
+const (
+	PodNodeNameKey          = "spec.nodeName"
+	NodeActivityNodeNameKey = "spec.nodeName"
+)
 
 // IndexPodNodeName extracts the pod's assigned node name for field indexing.
 func IndexPodNodeName(rawObj client.Object) []string {
@@ -276,11 +282,33 @@ func SetupPodNodeNameIndexer(ctx context.Context, indexer client.FieldIndexer) e
 	return indexer.IndexField(ctx, &corev1.Pod{}, PodNodeNameKey, IndexPodNodeName)
 }
 
+// IndexNodeActivityNodeName extracts the enrolled node name for field indexing.
+// Empty names are omitted so they do not share an index key with a blank query.
+func IndexNodeActivityNodeName(rawObj client.Object) []string {
+	activity, ok := rawObj.(*availabilityv1alpha1.NodeActivity)
+	if !ok || activity.Spec.NodeName == "" {
+		return nil
+	}
+	return []string{activity.Spec.NodeName}
+}
+
+// SetupNodeActivityNodeNameIndexer registers the field indexer for NodeActivity spec.nodeName.
+func SetupNodeActivityNodeNameIndexer(ctx context.Context, indexer client.FieldIndexer) error {
+	return indexer.IndexField(ctx, &availabilityv1alpha1.NodeActivity{}, NodeActivityNodeNameKey, IndexNodeActivityNodeName)
+}
+
 func (r *NodeActivityReconciler) SetupWithManager(manager ctrl.Manager) error {
 	if err := SetupPodNodeNameIndexer(context.Background(), manager.GetFieldIndexer()); err != nil {
 		return err
 	}
-	return ctrl.NewControllerManagedBy(manager).
+	if err := SetupNodeActivityNodeNameIndexer(context.Background(), manager.GetFieldIndexer()); err != nil {
+		return err
+	}
+	managed := ctrl.NewControllerManagedBy(manager)
+	if r.controllerName != "" {
+		managed = managed.Named(r.controllerName)
+	}
+	return managed.
 		For(&availabilityv1alpha1.NodeActivity{}).
 		Watches(&availabilityv1alpha1.NodeActivity{}, handler.EnqueueRequestsFromMapFunc(r.requestsForNode)).
 		// Node watch: an out-of-band taint or schedulable-label edit enqueues the

@@ -67,8 +67,7 @@ func newIdleFixture(t *testing.T, now time.Time, objects ...client.Object) *sche
 		t.Fatal(err)
 	}
 	all := append([]client.Object{activity, node}, objects...)
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
+	c := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).
 		WithStatusSubresource(&availabilityv1alpha1.NodeActivity{}).
 		WithIndex(&corev1.Pod{}, PodNodeNameKey, IndexPodNodeName).
 		WithObjects(all...).
