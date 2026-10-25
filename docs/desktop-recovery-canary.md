@@ -23,10 +23,10 @@ an earlier one.
 | `user-activity-detection` | The controller's `TaintApplied` condition matches the reported or scheduled state. |
 | `admission-closure` | The owned taint and burst taint are on the node, the schedulable label is absent, and a new opted-out probe stays Pending with an empty `nodeName`. |
 | `admission-reopen` | After a return to fresh idle, the owned taints are gone, the schedulable label is present, and a new probe reaches Running on the node. |
-| `eviction-acceptance` | The API accepted eviction: the Pod that was running keeps its UID and gains a `deletionTimestamp`. |
+| `eviction-acceptance` | The API server accepted the controller's Eviction request for the running Pod's UID (evidence `eviction-accepted`). The harness records this time from the controller's Eviction client rather than by polling for a `deletionTimestamp`, so a Pod that terminates quickly is not missed. |
 | `resource-release` | That UID is gone and no Pod of that workload still holds CPU or memory requests on the node. |
 
-Recorded eviction acceptance is not proof of recovery. A `deletionTimestamp` means the
+Recorded eviction acceptance is not proof of recovery. It only means the
 Eviction API accepted the request. The Pod can keep its CPU and memory requests
 until the kubelet finishes termination. Controller readiness, an ArgoCD
 `Healthy` status, and a `TaintApplied` condition are not proof either.

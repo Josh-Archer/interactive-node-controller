@@ -177,6 +177,48 @@ type recoveryHarness struct {
 	stableUID   map[string]string
 	generation  int64
 	finished    bool
+	accepted    *acceptanceRecorder
+}
+
+// acceptanceRecorder wraps the controller's Eviction client and records the
+// moment the API server accepts each Eviction, keyed by the precondition UID.
+// It is the controller's own acceptance signal, so a Pod deleted faster than
+// any poll interval is still measured.
+type acceptanceRecorder struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}
+
+func newAcceptanceRecorder() *acceptanceRecorder {
+	return &acceptanceRecorder{at: map[string]time.Time{}}
+}
+
+type acceptanceEvictor struct {
+	next     EvictionClient
+	recorder *acceptanceRecorder
+}
+
+func (e acceptanceEvictor) Evict(ctx context.Context, namespace, name string, options metav1.DeleteOptions) error {
+	err := e.next.Evict(ctx, namespace, name, options)
+	if err == nil && options.Preconditions != nil && options.Preconditions.UID != nil {
+		e.recorder.record(string(*options.Preconditions.UID), time.Now())
+	}
+	return err
+}
+
+func (r *acceptanceRecorder) record(uid string, when time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, seen := r.at[uid]; !seen {
+		r.at[uid] = when
+	}
+}
+
+func (r *acceptanceRecorder) lookup(uid string) (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	when, ok := r.at[uid]
+	return when, ok
 }
 
 func newRecoveryHarness(t *testing.T, config *rest.Config, contextName string) *recoveryHarness {
@@ -218,6 +260,7 @@ func newRecoveryHarness(t *testing.T, config *rest.Config, contextName string) *
 		t: t, ctx: ctx, cancel: cancel, config: config, direct: direct, contextName: contextName,
 		ns: "inc62-" + strconv.FormatInt(time.Now().UnixNano(), 36), policy: policy, eviction: eviction,
 		stableUID: map[string]string{},
+		accepted:  newAcceptanceRecorder(),
 		reporter:  &syntheticReporter{stop: make(chan struct{})},
 		report: recovery.Report{
 			SchemaVersion: recovery.SchemaVersion, Environment: recovery.EnvKind, DetectionScope: recovery.DetectionScopeController,
@@ -326,7 +369,7 @@ func (h *recoveryHarness) startLeader(name string, waitElected bool) runningLead
 	}
 	reconciler := &NodeActivityReconciler{
 		Client: manager.GetClient(), Policy: h.policy, Eviction: h.eviction,
-		Evictor: KubernetesEvictionClient{Client: clientset}, controllerName: name,
+		Evictor: acceptanceEvictor{next: KubernetesEvictionClient{Client: clientset}, recorder: h.accepted}, controllerName: name,
 	}
 	if err := reconciler.SetupWithManager(manager); err != nil {
 		cancel()
@@ -688,7 +731,7 @@ func (h *recoveryHarness) scenarioPDB() {
 		h.failf("pdb clearance acceptance gap = %dms", gap)
 	}
 	h.current.Samples = append(h.current.Samples,
-		h.sample(recovery.ScenarioPDB, recovery.PhaseEviction, recovery.TriggerPDBDeleted, removed, accept, recovery.ExpectedObserved, recovery.EvidenceDeletionTimestamp, false, nil),
+		h.sample(recovery.ScenarioPDB, recovery.PhaseEviction, recovery.TriggerPDBDeleted, removed, accept, recovery.ExpectedObserved, recovery.EvidenceEvictionAccepted, false, nil),
 		h.sample(recovery.ScenarioPDB, recovery.PhaseRelease, recovery.TriggerPDBDeleted, removed, release, recovery.ExpectedObserved, recovery.EvidencePodAbsent+" "+recovery.EvidenceRequestsDropped+" "+recovery.EvidenceAfterPDBRemoved, true, &gap),
 	)
 	h.current.Workloads = append(h.observations(statusWorkloads, before, evictSet([]string{recovery.WorkloadLossy}), ""), blocked...)
@@ -729,7 +772,7 @@ func (h *recoveryHarness) collect(trigger time.Time, gate nodeGate, evict []stri
 				h.failf("%s had no running pod at the trigger", name)
 			}
 			if _, seen := accepted[name]; !seen {
-				if when, ok := h.acceptedAt(name, state.uid); ok {
+				if when, ok := h.acceptedAt(state.uid); ok {
 					accepted[name] = when
 				}
 			}
@@ -771,7 +814,7 @@ func (h *recoveryHarness) recoverySamples(scenario, trigger string, triggerAt ti
 	samples := []recovery.PhaseSample{
 		h.sample(scenario, recovery.PhaseDetection, trigger, triggerAt, clock.detection, recovery.ExpectedObserved, "condition="+h.conditionSummary(), false, nil),
 		h.sample(scenario, recovery.PhaseAdmission, trigger, triggerAt, clock.admission, recovery.ExpectedObserved, "taint and schedulable label changed; probe has no nodeName", false, nil),
-		h.sample(scenario, recovery.PhaseEviction, trigger, triggerAt, clock.acceptance, recovery.ExpectedObserved, recovery.EvidenceDeletionTimestamp, false, nil),
+		h.sample(scenario, recovery.PhaseEviction, trigger, triggerAt, clock.acceptance, recovery.ExpectedObserved, recovery.EvidenceEvictionAccepted, false, nil),
 	}
 	if includeRelease {
 		gap := clock.gap
@@ -1021,16 +1064,10 @@ func (h *recoveryHarness) deleteProbes() {
 	})
 }
 
-func (h *recoveryHarness) acceptedAt(name, uid string) (time.Time, bool) {
-	for _, pod := range h.pods(h.ctx, name) {
-		if string(pod.UID) == uid && pod.DeletionTimestamp != nil {
-			return time.Now(), true
-		}
-	}
-	if !h.podExists(name, uid) {
-		return time.Time{}, false
-	}
-	return time.Time{}, false
+// acceptedAt reports when the controller's Eviction request for this Pod UID
+// was accepted by the API server.
+func (h *recoveryHarness) acceptedAt(uid string) (time.Time, bool) {
+	return h.accepted.lookup(uid)
 }
 
 func (h *recoveryHarness) podExists(name, uid string) bool {
@@ -1048,7 +1085,7 @@ func (h *recoveryHarness) waitEvicted(name, uid string, trigger time.Time) (time
 	deadline := trigger.Add(recovery.DefaultBudget().ResourceRelease.Duration())
 	for time.Now().Before(deadline) && (accept.IsZero() || release.IsZero()) {
 		if accept.IsZero() {
-			if when, ok := h.acceptedAt(name, uid); ok {
+			if when, ok := h.acceptedAt(uid); ok {
 				accept = when
 			}
 		}

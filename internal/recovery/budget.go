@@ -58,6 +58,7 @@ const (
 	EvidenceRequestsDropped   = "requests-dropped"
 	EvidenceStillBound        = "still-bound"
 	EvidenceDeletionTimestamp = "deletionTimestamp"
+	EvidenceEvictionAccepted  = "eviction-accepted"
 	EvidenceTimestampAbsent   = "deletionTimestamp-absent"
 	EvidenceUIDUnchanged      = "uid-unchanged"
 	EvidenceAfterPDBRemoved   = "after-pdb-removed"
