@@ -108,22 +108,67 @@ and is restricted to that object's `status` subresource.
 Eviction is disabled and audit-only by default. A consumer must explicitly set
 `eviction.enabled=true` and `eviction.audit=false`, and each workload Pod must
 carry the exact label `interactive-node-controller.io/evictable: "true"`.
+A second opt-in, the label or annotation
+`interactive-node-controller.io/allow-lossy-eviction: "true"`, marks a Pod as
+lossy. Pods with only the evictable label are standard pods. Missing either
+opt-in never becomes eligible. This is not a blanket eviction policy.
 
-Evictions run under three conditions:
-1. **Active Game Eviction**: When enrolled activity is `active` with `game` activity and the controller's managed taint is `NoSchedule` with the active value. Both standard evictable pods and lossy pods qualify.
-2. **Protective Fail-Closed Eviction (Lossy Only)**: When the host heartbeat has expired (`HeartbeatAt` older than `staleAfter`) or the reporter explicitly reports `stale`, and the fail-closed `NoSchedule` taint is applied to the node. Only pods that have explicitly opted into lossy eviction are evicted under this condition. Transient `unknown` states during reporter startup/debounce do not evict pods. Stale, unknown, idle, and interactive states never trigger eviction of standard pods.
-3. **Interactive Session Eviction (Lossy Only)**: When the host is interactively active (user present) or the burst `NoSchedule` taint is applied to the node. Workstation compute is immediately returned to the interactive user by evicting lossy burst workloads. Standard evictable pods are unaffected.
+The controller uses the Kubernetes `policy/v1` Eviction API.
+Eviction requests include the inspected Pod's UID and resource version as
+preconditions. A replacement or changed Pod is blocked and must pass the
+safety gates again; missing identity metadata never permits an eviction.
+PDB throttling (`429 TooManyRequests`) and other API conflicts are recorded as
+blocked and retried for both standard and lossy pods. The controller never
+bypasses a PDB by deleting a Pod. The per-reconcile rate cap and retry backoff
+are configurable.
+
+Duplicate enrollments suppress every row below. While more than one live
+`NodeActivity` targets the Node, Reconcile applies the strongest taint and
+does not call the Eviction API.
+
+### Eviction matrix
+
+`Fresh` means `status.heartbeatAt` is set and younger than `staleAfter`.
+The optional burst `NoSchedule` taint (`--burst-taint-key`) is a scheduling
+fence for every Node that is not fresh idle. It does not authorize eviction
+of a fresh `unknown` report, and it never authorizes eviction of a standard pod.
+
+| Live report | Standard | Lossy |
+| --- | --- | --- |
+| Fresh idle and no desired taint, including a scheduled `idle-allowed` window on a fresh idle report. A leftover burst `NoSchedule` taint does not evict. | no | no |
+| Fresh active `interactive`, an availability hold, or a scheduled `interactive` window (`PreferNoSchedule` with the interactive value is desired and applied) | no | yes |
+| Fresh active `game` with the active `NoSchedule` taint desired and applied, whether or not the burst fence is also present | yes | yes |
+| Fresh `state=unknown` (reporter startup or debounce), including when fail-closed `NoSchedule` and the burst `NoSchedule` fence are both applied | no | no |
+| Heartbeat missing or older than `staleAfter`, or reporter `state=stale`, while fail-closed `NoSchedule` is desired and applied. An expired heartbeat stays on this row even if the last activity was `game`. | no | yes |
+| Scheduled `game` window while the live report is not an active game | no | yes only when the burst `NoSchedule` fence is configured and present; otherwise no |
+| Fresh `state=active` whose activity is not `game` (interactive, or an unsupported activity that fail-closes scheduling) | no | yes |
+| Two or more live enrollments for the Node | no | no |
+
+A fresh `state=unknown` report is not a fresh `state=active` report whose
+activity is `unknown`. The latter is an unsupported activity: scheduling
+fail-closes, and lossy pods are eligible. A missing or expired heartbeat is
+not a fresh unknown debounce; it follows the stale row even if `state` is
+still `unknown`. Stale, unknown, idle, interactive, and scheduled states never
+evict standard pods. Only a fresh active game with the active `NoSchedule`
+taint does.
 
 ### Lossy Eviction Opt-In for Ephemeral Workloads
 
-Ephemeral burst workloads (such as disposable CI runners) can opt into lossy eviction by setting the annotation or label `interactive-node-controller.io/allow-lossy-eviction: "true"` in addition to `interactive-node-controller.io/evictable: "true"`.
+Ephemeral burst workloads (such as disposable CI runners) opt in by setting
+the annotation or label `interactive-node-controller.io/allow-lossy-eviction: "true"`
+in addition to `interactive-node-controller.io/evictable: "true"`.
 
-When lossy eviction is allowed:
-- Pods may use `emptyDir` volumes (scratch space is discarded on eviction).
-- Pods may declare explicit node selectors (`spec.nodeSelector`) or required node affinities (`spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`).
-- Lossy pods have a separate burst eviction budget of `max(4, MaxPerReconcile)` pods per reconcile pass (decoupled from standard pod rate caps).
+Lossy opt-in relaxes only these standard gates:
 
-Hard safety gates are **never bypassed**, even for lossy pods:
+- `emptyDir` volumes (scratch space is discarded on eviction).
+- Explicit node selectors (`spec.nodeSelector`).
+- Required node affinity (`spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`).
+- The per-reconcile budget is `max(4, MaxPerReconcile)` for lossy pods, separate from the standard cap.
+
+### Volume and Pod safety contract
+
+These gates apply to standard and lossy pods. Lossy opt-in does not bypass them:
+
 - DaemonSet-owned pods
 - Unmanaged pods (no owner reference)
 - Mirror/static pods
@@ -131,18 +176,20 @@ Hard safety gates are **never bypassed**, even for lossy pods:
 - Terminating pods
 - Direct pinned pods (`interactive-node-controller.io/pinned: "true"`)
 - Critical priority pods (`priority >= 2000000000`)
-- Any `hostPath` volumes
-- Any PersistentVolumeClaims (RWO, unbound, local, or hostPath PVs)
+- Any `hostPath` volume
+- Unbound PersistentVolumeClaims
+- PersistentVolumes with a local or hostPath source
+- Access modes `ReadWriteOnce` and `ReadWriteOncePod`
 
-The controller uses the Kubernetes `policy/v1` Eviction API.
-Eviction requests include the inspected Pod's UID and resource version as
-preconditions. A replacement or changed Pod is blocked and must pass the
-safety gates again; missing identity metadata never permits an eviction.
+PVC eligibility then differs by class, on purpose:
 
-PDB throttling
-(`429 TooManyRequests`) and other API conflicts are recorded as blocked and
-retried; the controller never bypasses a PDB by deleting a Pod. The per-reconcile
-rate cap and retry backoff are configurable.
+- **Standard pods** may remain eligible with a bound PVC when the volume is not
+  local or hostPath and no access mode is `ReadWriteOnce` or `ReadWriteOncePod`.
+  Bound `ReadWriteMany` and `ReadOnlyMany` claims are eligible. That is the
+  Phase 3 rule: only RWO-sensitive claims are unsafe to move.
+- **Lossy pods** are ineligible for every PersistentVolumeClaim, including a
+  bound `ReadWriteMany` claim. The lossy opt-in does not make multi-attach
+  storage evictable. The skip reason is `pvc-not-allowed`.
 
 Blocked attempts retain a per-node, per-Pod-UID retry deadline. Heartbeat and
 status events continue to reconcile taints, but cannot retry eviction before
@@ -153,11 +200,14 @@ process-local: after a restart or leader switch, an eligible Pod may be tried
 immediately, still using the Eviction API and all safety gates.
 
 Safety gates skip and explain DaemonSet-owned, mirror/static, protected
-namespace, terminating, unmanaged, critical-priority, any non-empty
-`spec.nodeSelector`, hostPath/emptyDir/local storage, PVC-backed RWO, required
-node-affinity, and explicitly pinned Pods (unless opted into lossy eviction for nodeSelector, required affinity, and emptyDir). A node selector can target a scarce
-capability or a single node, so the controller does not attempt a scheduler
-feasibility proof during eviction of standard workloads.
+namespace, terminating, unmanaged, critical-priority, pinned, `hostPath`, and
+local storage. Standard pods also skip any non-empty `spec.nodeSelector`,
+`emptyDir`, required node affinity, and `ReadWriteOnce` or `ReadWriteOncePod`
+claims. Lossy pods may use those scheduling and scratch exceptions, and still
+skip every PersistentVolumeClaim, including bound `ReadWriteMany`. A node
+selector can target a scarce capability or a single node, so the controller
+does not attempt a scheduler feasibility proof during eviction of standard
+workloads.
 Skipped and blocked outcomes are exported in
 `interactive_node_controller_evictions_total{outcome,reason}` and summarized
 by the `Eviction` NodeActivity condition. Workload specs are never mutated.
