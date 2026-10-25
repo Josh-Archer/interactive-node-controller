@@ -165,8 +165,9 @@ and a PDB case marked accepted or released while it was blocked.
 The harness controller runs in-process. It is not the Helm chart. It uses
 `staleAfter` 20s, burst key `availability.interactive-node.io/burst`, and
 eviction enabled with audit off. Disposable Pods use a 3 second termination
-grace so acceptance and release differ by at least one second. Pause ignores
-`SIGTERM`, so the grace is what creates that gap.
+grace and a 2 second `preStop` sleep so acceptance and release differ by at
+least one second. Pause exits promptly on `SIGTERM`, so the `preStop` sleep is
+what creates that gap.
 
 ## Evidence collection
 

@@ -506,10 +506,17 @@ func (h *recoveryHarness) ensureDeployment(name string) {
 	if profile.Disposable && profile.OptedIn {
 		grace = 3
 	}
+	// Pause exits promptly on SIGTERM, so grace alone does not hold the Pod.
+	// A preStop sleep keeps an evicted disposable Pod terminating for 2s, which
+	// guarantees acceptance and release are at least one second apart.
+	var lifecycle *corev1.Lifecycle
+	if profile.Disposable && profile.OptedIn {
+		lifecycle = &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: 2}}}
+	}
 	podSpec := corev1.PodSpec{
 		TerminationGracePeriodSeconds: &grace, Tolerations: recoveryTolerations(),
 		Containers: []corev1.Container{{
-			Name: "pause", Image: recoveryPauseImage, ImagePullPolicy: corev1.PullIfNotPresent,
+			Name: "pause", Image: recoveryPauseImage, ImagePullPolicy: corev1.PullIfNotPresent, Lifecycle: lifecycle,
 			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
 				corev1.ResourceCPU: resource.MustParse(profile.CPU), corev1.ResourceMemory: resource.MustParse(profile.Memory),
 			}},
