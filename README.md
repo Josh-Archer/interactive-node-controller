@@ -119,6 +119,13 @@ audit-only-by-default safe eviction path. Standard evictions require an explicit
 state, the managed `NoSchedule` taint, and consumer opt-in flags. Ephemeral burst
 workloads opting into lossy eviction (`interactive-node-controller.io/allow-lossy-eviction: "true"`)
 are also evicted during protective fail-closed states (`NoSchedule` on stale heartbeat/reporter).
+Chart value `taint.burstKey` passes `--burst-taint-key` when set. Leave it
+empty to keep the rendered arguments unchanged. The key must be a Kubernetes
+qualified name and must differ from `taint.key`.
+[`examples/disposable-runner.yaml`](examples/disposable-runner.yaml) shows
+schedulable-label admission, burst-taint behavior, and the lossy opt-in. Loss
+of scratch data and interrupted work are part of that contract. Place the
+runner manifest in the consuming GitOps repository.
 The policy/v1 Eviction API is used so PDBs and grace periods are respected; PDB
 blocks are reported and retried. See [controller operations](docs/controller.md).
 Install with the Helm chart only through a consumer-owned, version/digest-pinned

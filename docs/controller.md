@@ -83,6 +83,15 @@ A missing, stale, `unknown`, or unsupported status yields the configured
 desktop state applies `PreferNoSchedule`; active game state applies
 `NoSchedule`.
 
+Chart value `taint.burstKey` maps to `--burst-taint-key`. An empty value omits
+the flag and preserves single-taint behavior. A configured value must be a
+Kubernetes qualified name and must differ from `taint.key`. The chart rejects
+an invalid key or a collision at render time, and the controller rejects the
+same cases at startup. While the key is set, the controller applies
+`<burstKey>=<failClosedValue>:NoSchedule` whenever the node is not fresh-idle
+and removes that taint when the node is fresh-idle. Every fresh-idle node
+receives `availability.interactive-node.io/schedulable=true`.
+
 The controller records a `TaintApplied` condition and `status.managedTaint`.
 The condition makes malformed enrollment, missing Nodes, and applied policy
 observable without inspecting the Node manually. Current activity state and
@@ -117,6 +126,12 @@ Evictions run under three conditions:
 ### Lossy Eviction Opt-In for Ephemeral Workloads
 
 Ephemeral burst workloads (such as disposable CI runners) can opt into lossy eviction by setting the annotation or label `interactive-node-controller.io/allow-lossy-eviction: "true"` in addition to `interactive-node-controller.io/evictable: "true"`.
+
+Loss of scratch data and interrupted work are part of the lossy contract.
+Eviction stops the container and abandons the in-flight step.
+[`examples/disposable-runner.yaml`](../examples/disposable-runner.yaml) shows
+schedulable-label admission, burst-taint behavior, and both opt-in labels.
+Copy that manifest into the consuming GitOps repository.
 
 When lossy eviction is allowed:
 - Pods may use `emptyDir` volumes (scratch space is discarded on eviction).

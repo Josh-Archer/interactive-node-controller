@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -51,6 +52,18 @@ func (p TaintPolicy) Validate() error {
 	}
 	if p.StaleAfter <= 0 {
 		return fmt.Errorf("stale-after must be positive")
+	}
+	if p.BurstTaintKey == "" {
+		return nil
+	}
+	if strings.ContainsAny(p.BurstTaintKey, " \t\r\n") {
+		return fmt.Errorf("burst taint key %q cannot contain whitespace", p.BurstTaintKey)
+	}
+	if msgs := validation.IsQualifiedName(p.BurstTaintKey); len(msgs) > 0 {
+		return fmt.Errorf("burst taint key %q is invalid: %s", p.BurstTaintKey, strings.Join(msgs, "; "))
+	}
+	if p.BurstTaintKey == p.Key {
+		return fmt.Errorf("burst taint key %q collides with the primary taint key", p.BurstTaintKey)
 	}
 	return nil
 }
