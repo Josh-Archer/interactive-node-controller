@@ -1,0 +1,47 @@
+# Example alerts for the controller's admission and eviction signals.
+# Copy this PrometheusRule into the consuming GitOps repository. The series
+# exist only for Nodes with a live enrollment.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: interactive-node-controller
+spec:
+  groups:
+    - name: interactive-node-controller
+      rules:
+        - alert: InteractiveNodeReporterStale
+          expr: interactive_node_controller_heartbeat_valid == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Host reporter heartbeat is missing or older than stale-after
+            description: >-
+              {{ $labels.node }} has heartbeat_valid 0. status.admission.reason
+              is missing-heartbeat or stale-heartbeat, and the controller keeps
+              its fail-closed fence. This does not mean an arbitrary workload
+              could schedule on the Node.
+        - alert: InteractiveNodeInvalidConfig
+          expr: interactive_node_controller_config_invalid{reason="schedule"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: NodeActivity availability schedule cannot be evaluated
+            description: >-
+              {{ $labels.node }} has InvalidSchedule=True. Scheduled windows
+              are not applied. Live activity and heartbeat protection still are.
+              An enrollment with an empty spec.nodeName is reported as
+              TaintApplied reason InvalidEnrollment and has no node series.
+        - alert: InteractiveNodeEvictionBlocked
+          expr: interactive_node_controller_eviction_blocked == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Opt-in eviction has been blocked
+            description: >-
+              {{ $labels.node }} eviction is blocked with reason {{ $labels.reason }}.
+              Reasons are pdb-blocked, api-error, eviction-conflict, pod-gone,
+              or retry-backoff. The Eviction condition is EvictionBlocked.
+              Rate limiting is a separate outcome and does not raise this alert.

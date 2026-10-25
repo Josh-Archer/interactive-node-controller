@@ -57,6 +57,9 @@ func TestKubernetesReporterPatchesOnlyBoundNodeActivityStatus(t *testing.T) {
 	if strings.Contains(captured.URL.Path, "/api/v1/nodes") || strings.Contains(string(payload), `"kind":"Node"`) {
 		t.Fatalf("Node mutation invariant violated: %s %s", captured.URL.Path, payload)
 	}
+	if strings.Contains(string(payload), `"admission"`) {
+		t.Fatalf("reporter patch must omit controller-owned admission: %s", payload)
+	}
 	if got := captured.Header.Get("Authorization"); got != "Bearer rotating-token" {
 		t.Fatalf("Authorization = %q", got)
 	}

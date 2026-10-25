@@ -24,15 +24,65 @@ var (
 
 	schedulableMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "interactive_node_controller_schedulable",
-		Help: "Whether this controller is standing down (1) or applying managed taints/fail-closed (0).",
+		Help: admissionSignalHelp,
 	}, []string{"node"})
+
+	admissionMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_admission",
+		Help: "Effective controller admission reason for workloads that select " + schedulableLabelPhrase + ". 1 on the active bounded reason. " + admissionDisclaimer,
+	}, []string{"node", "reason"})
+
+	heartbeatAgeMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_heartbeat_age_seconds",
+		Help: "Whole seconds since the heartbeat that produced the node policy. Absent when that heartbeat timestamp is missing.",
+	}, []string{"node"})
+
+	heartbeatValidMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_heartbeat_valid",
+		Help: "1 when the heartbeat that produced the node policy is set and younger than stale-after.",
+	}, []string{"node"})
+
+	burstTaintMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_burst_taint",
+		Help: "1 when the configured burst NoSchedule taint is present on the Node, 0 when the key is configured and the taint is absent. No series when burst tainting is not configured.",
+	}, []string{"node"})
+
+	nextTransitionMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_next_transition_timestamp_seconds",
+		Help: "Unix timestamp of the next heartbeat, hold, or scheduled-window boundary that can change managed policy. Window start time remains inc_next_window_start_timestamp_seconds.",
+	}, []string{"node"})
+
+	evictionOutcomeMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_eviction_outcome",
+		Help: "Current eviction condition outcome. 1 on the active bounded outcome.",
+	}, []string{"node", "outcome"})
+
+	evictionBlockedMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_eviction_blocked",
+		Help: "1 while eviction is blocked. Reason is pdb-blocked, api-error, eviction-conflict, pod-gone, or retry-backoff.",
+	}, []string{"node", "reason"})
+
+	configInvalidMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "interactive_node_controller_config_invalid",
+		Help: "1 when the enrollment schedule cannot be evaluated. Reason is schedule.",
+	}, []string{"node", "reason"})
 
 	windowActiveMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "inc_window_active", Help: "Whether an availability window or its lead-time taint is active."}, []string{"node"})
 	nextWindowMetric   = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "inc_next_window_start_timestamp_seconds", Help: "Unix timestamp of the next scheduled availability window."}, []string{"node"})
 
-	metricsMu    sync.Mutex
-	lastActivity = make(map[string]activityMetricLabels)
-	lastTaint    = make(map[string]taintMetricLabels)
+	metricsMu           sync.Mutex
+	lastActivity        = make(map[string]activityMetricLabels)
+	lastTaint           = make(map[string]taintMetricLabels)
+	lastAdmissionReason = make(map[string]string)
+	lastEvictionOutcome = make(map[string]string)
+	lastEvictionBlocker = make(map[string]string)
+)
+
+const (
+	schedulableLabelPhrase = "availability.interactive-node.io/schedulable"
+	admissionDisclaimer    = "This does not mean the kube-scheduler can place an arbitrary workload on the Node."
+	admissionSignalHelp    = "1 when this controller stands down its managed taint and sets " + schedulableLabelPhrase + " for workloads that select that label. " + admissionDisclaimer
+	configInvalidReason    = "schedule"
 )
 
 type activityMetricLabels struct {
@@ -47,7 +97,40 @@ type taintMetricLabels struct {
 }
 
 func init() {
-	metrics.Registry.MustRegister(activityMetric, taintMetric, schedulableMetric, windowActiveMetric, nextWindowMetric)
+	metrics.Registry.MustRegister(
+		activityMetric,
+		taintMetric,
+		schedulableMetric,
+		admissionMetric,
+		heartbeatAgeMetric,
+		heartbeatValidMetric,
+		burstTaintMetric,
+		nextTransitionMetric,
+		evictionOutcomeMetric,
+		evictionBlockedMetric,
+		configInvalidMetric,
+		windowActiveMetric,
+		nextWindowMetric,
+	)
+}
+
+func controllerAdmitted(fresh bool, state availabilityv1alpha1.State, activity availabilityv1alpha1.Activity, desired *corev1.Taint) bool {
+	return fresh && state == availabilityv1alpha1.StateIdle && activity == availabilityv1alpha1.ActivityIdle && desired == nil
+}
+
+func heartbeatFresh(at, now time.Time, staleAfter time.Duration) bool {
+	return !at.IsZero() && now.Sub(at) < staleAfter
+}
+
+func heartbeatObservation(at, now time.Time, staleAfter time.Duration) (bool, *int64) {
+	if at.IsZero() {
+		return false, nil
+	}
+	seconds := int64(now.Sub(at) / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	return heartbeatFresh(at, now, staleAfter), &seconds
 }
 
 func observeWindowMetrics(nodeName string, active bool, next time.Time) {
@@ -108,11 +191,82 @@ func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, 
 		lastTaint[nodeName] = taintMetricLabels{key: desired.Key, value: desired.Value, effect: desiredEffect}
 	}
 
-	if fresh && state == availabilityv1alpha1.StateIdle && activity == availabilityv1alpha1.ActivityIdle && desired == nil {
+	if controllerAdmitted(fresh, state, activity, desired) {
 		schedulableMetric.WithLabelValues(nodeName).Set(1)
 	} else {
 		schedulableMetric.WithLabelValues(nodeName).Set(0)
 	}
+}
+
+func observeAdmission(nodeName string, heartbeatAt, now time.Time, staleAfter time.Duration, reason string, burstConfigured, burstApplied bool, nextTransition time.Time) {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" || reason == "" {
+		return
+	}
+	valid, age := heartbeatObservation(heartbeatAt, now, staleAfter)
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+
+	if old, ok := lastAdmissionReason[nodeName]; ok && old != reason {
+		admissionMetric.DeleteLabelValues(nodeName, old)
+	}
+	admissionMetric.WithLabelValues(nodeName, reason).Set(1)
+	lastAdmissionReason[nodeName] = reason
+
+	heartbeatValidMetric.WithLabelValues(nodeName).Set(boolGauge(valid))
+	if age == nil {
+		heartbeatAgeMetric.DeleteLabelValues(nodeName)
+	} else {
+		heartbeatAgeMetric.WithLabelValues(nodeName).Set(float64(*age))
+	}
+	if burstConfigured {
+		burstTaintMetric.WithLabelValues(nodeName).Set(boolGauge(burstApplied))
+	} else {
+		burstTaintMetric.DeleteLabelValues(nodeName)
+	}
+	if nextTransition.IsZero() {
+		nextTransitionMetric.DeleteLabelValues(nodeName)
+	} else {
+		nextTransitionMetric.WithLabelValues(nodeName).Set(float64(nextTransition.Unix()))
+	}
+}
+
+func observeEvictionStatus(nodeName, outcome, blocker string) {
+	nodeName = strings.TrimSpace(nodeName)
+	outcome = strings.TrimSpace(outcome)
+	if nodeName == "" || outcome == "" {
+		return
+	}
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+
+	if old, ok := lastEvictionOutcome[nodeName]; ok && old != outcome {
+		evictionOutcomeMetric.DeleteLabelValues(nodeName, old)
+	}
+	evictionOutcomeMetric.WithLabelValues(nodeName, outcome).Set(1)
+	lastEvictionOutcome[nodeName] = outcome
+
+	if old, ok := lastEvictionBlocker[nodeName]; ok && (outcome != evictionStateBlocked || old != blocker) {
+		evictionBlockedMetric.DeleteLabelValues(nodeName, old)
+		delete(lastEvictionBlocker, nodeName)
+	}
+	if outcome == evictionStateBlocked {
+		blocker = boundedBlockerReason(blocker)
+		evictionBlockedMetric.WithLabelValues(nodeName, blocker).Set(1)
+		lastEvictionBlocker[nodeName] = blocker
+	}
+}
+
+func observeConfigInvalid(nodeName string, invalid bool) {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return
+	}
+	if invalid {
+		configInvalidMetric.WithLabelValues(nodeName, configInvalidReason).Set(1)
+		return
+	}
+	configInvalidMetric.DeleteLabelValues(nodeName, configInvalidReason)
 }
 
 func clearNodeMetrics(nodeName string) {
@@ -134,6 +288,23 @@ func clearNodeMetrics(nodeName string) {
 	schedulableMetric.DeleteLabelValues(nodeName)
 	windowActiveMetric.DeleteLabelValues(nodeName)
 	nextWindowMetric.DeleteLabelValues(nodeName)
+	if reason, ok := lastAdmissionReason[nodeName]; ok {
+		admissionMetric.DeleteLabelValues(nodeName, reason)
+		delete(lastAdmissionReason, nodeName)
+	}
+	heartbeatValidMetric.DeleteLabelValues(nodeName)
+	heartbeatAgeMetric.DeleteLabelValues(nodeName)
+	burstTaintMetric.DeleteLabelValues(nodeName)
+	nextTransitionMetric.DeleteLabelValues(nodeName)
+	if outcome, ok := lastEvictionOutcome[nodeName]; ok {
+		evictionOutcomeMetric.DeleteLabelValues(nodeName, outcome)
+		delete(lastEvictionOutcome, nodeName)
+	}
+	if blocker, ok := lastEvictionBlocker[nodeName]; ok {
+		evictionBlockedMetric.DeleteLabelValues(nodeName, blocker)
+		delete(lastEvictionBlocker, nodeName)
+	}
+	configInvalidMetric.DeleteLabelValues(nodeName, configInvalidReason)
 }
 
 func resetMetricsForTesting() {
@@ -143,8 +314,19 @@ func resetMetricsForTesting() {
 	activityMetric.Reset()
 	taintMetric.Reset()
 	schedulableMetric.Reset()
+	admissionMetric.Reset()
+	heartbeatAgeMetric.Reset()
+	heartbeatValidMetric.Reset()
+	burstTaintMetric.Reset()
+	nextTransitionMetric.Reset()
+	evictionOutcomeMetric.Reset()
+	evictionBlockedMetric.Reset()
+	configInvalidMetric.Reset()
 	windowActiveMetric.Reset()
 	nextWindowMetric.Reset()
 	lastActivity = make(map[string]activityMetricLabels)
 	lastTaint = make(map[string]taintMetricLabels)
+	lastAdmissionReason = make(map[string]string)
+	lastEvictionOutcome = make(map[string]string)
+	lastEvictionBlocker = make(map[string]string)
 }

@@ -14,13 +14,16 @@ import (
 )
 
 type enrollmentProtection struct {
-	taint        *corev1.Taint
-	source       *availabilityv1alpha1.NodeActivity
-	reason       string
-	requeueAfter time.Duration
-	count        int
-	scheduled    bool
-	nextWindow   time.Time
+	taint            *corev1.Taint
+	source           *availabilityv1alpha1.NodeActivity
+	reason           string
+	admissionReason  string
+	requeueAfter     time.Duration
+	count            int
+	scheduled        bool
+	nextWindow       time.Time
+	nextTransition   time.Time
+	transitionReason string
 }
 
 // Aggregate every live enrollment for this Node across namespaces. The
@@ -47,27 +50,33 @@ func (r *NodeActivityReconciler) protectionForNode(ctx context.Context, nodeName
 			continue
 		}
 		result.count++
-		taint, reason, delay, scheduled, nextWindow, err := r.desiredTaint(item, now)
+		decision, err := r.decidePolicy(item, now)
 		if err != nil {
 			return enrollmentProtection{}, err
 		}
-		if delay > 0 && (result.requeueAfter == 0 || delay < result.requeueAfter) {
-			result.requeueAfter = delay
+		if decision.requeueAfter > 0 && (result.requeueAfter == 0 || decision.requeueAfter < result.requeueAfter) {
+			result.requeueAfter = decision.requeueAfter
 		}
 		rank := 0
-		if taint != nil {
+		if decision.taint != nil {
 			rank = 1
-			if taint.Effect == corev1.TaintEffectNoSchedule {
+			if decision.taint.Effect == corev1.TaintEffectNoSchedule {
 				rank = 2
-				if item.Status.State == availabilityv1alpha1.StateActive && item.Status.Activity == availabilityv1alpha1.ActivityGame && !item.Status.HeartbeatAt.IsZero() && now.Sub(item.Status.HeartbeatAt) < r.Policy.StaleAfter {
+				if item.Status.State == availabilityv1alpha1.StateActive && item.Status.Activity == availabilityv1alpha1.ActivityGame && heartbeatFresh(item.Status.HeartbeatAt, now, r.Policy.StaleAfter) {
 					rank = 3
 				}
 			}
 		}
 		if rank > best {
 			best = rank
-			result.taint, result.source, result.reason = taint, item, reason
-			result.scheduled, result.nextWindow = scheduled, nextWindow
+			result.taint = decision.taint
+			result.source = item
+			result.reason = decision.message
+			result.admissionReason = decision.admissionReason
+			result.scheduled = decision.scheduled
+			result.nextWindow = decision.nextWindow
+			result.nextTransition = decision.nextTransition
+			result.transitionReason = decision.transitionReason
 		}
 	}
 	if result.count > 1 {
