@@ -32,6 +32,22 @@ const (
 	evictionOutcomeEvicted   = "evicted"
 	evictionOutcomeSkipped   = "skipped"
 	evictionOutcomeBlocked   = "blocked"
+
+	evictionStateDisabled    = "disabled"
+	evictionStateAuditOnly   = "audit-only"
+	evictionStateInactive    = "inactive"
+	evictionStateNoEligible  = "no-eligible-pods"
+	evictionStateBlocked     = "blocked"
+	evictionStateRateLimited = "rate-limited"
+	evictionStateCompleted   = "completed"
+
+	EvictionReasonDisabled    = "EvictionDisabled"
+	EvictionReasonAuditOnly   = "AuditOnly"
+	EvictionReasonInactive    = "EvictionInactive"
+	EvictionReasonNoEligible  = "NoEligiblePods"
+	EvictionReasonBlocked     = "EvictionBlocked"
+	EvictionReasonRateLimited = "EvictionRateLimited"
+	EvictionReasonCompleted   = "EvictionCompleted"
 )
 
 func isLossyEvictionAllowed(pod *corev1.Pod) bool {
@@ -110,26 +126,116 @@ func (p EvictionPolicy) Validate() error {
 }
 
 type evictionSummary struct {
-	audited, attempted, evicted, skipped, blocked int
-	requeueAfter                                  time.Duration
-	message                                       string
+	audited, attempted, evicted, skipped, blocked, rateLimited int
+	outcome                                                    string
+	blockerReason                                              string
+	requeueAfter                                               time.Duration
+	message                                                    string
 }
 
 func (s evictionSummary) condition(now time.Time, generation int64) metav1.Condition {
 	status := metav1.ConditionTrue
-	reason := "EvictionDisabled"
-	message := "eviction is disabled"
-	if s.blocked > 0 {
-		status, reason = metav1.ConditionFalse, "EvictionBlocked"
-		message = s.message
-	} else if s.audited > 0 && s.attempted == 0 {
-		reason = "AuditOnly"
-		message = s.message
-	} else if s.attempted > 0 {
-		reason = "EvictionReconciled"
-		message = s.message
+	reason := EvictionReasonDisabled
+	message := s.message
+	switch s.outcome {
+	case evictionStateAuditOnly:
+		reason = EvictionReasonAuditOnly
+	case evictionStateInactive:
+		reason = EvictionReasonInactive
+	case evictionStateNoEligible:
+		reason = EvictionReasonNoEligible
+	case evictionStateBlocked:
+		status, reason = metav1.ConditionFalse, EvictionReasonBlocked
+	case evictionStateRateLimited:
+		reason = EvictionReasonRateLimited
+	case evictionStateCompleted:
+		reason = EvictionReasonCompleted
+	}
+	if message == "" {
+		message = "eviction is disabled"
 	}
 	return metav1.Condition{Type: EvictionCondition, Status: status, Reason: reason, Message: message, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)}
+}
+
+func (s *evictionSummary) noteBlocker(reason, message string) {
+	if blockerRank(reason) >= blockerRank(s.blockerReason) {
+		s.blockerReason = reason
+		if message != "" {
+			s.message = message
+		}
+	}
+}
+
+func blockerRank(reason string) int {
+	switch reason {
+	case "retry-backoff":
+		return 1
+	case "pod-gone":
+		return 2
+	case "eviction-conflict":
+		return 3
+	case "api-error":
+		return 4
+	case "pdb-blocked":
+		return 5
+	default:
+		return 0
+	}
+}
+
+func (s *evictionSummary) classify() {
+	switch {
+	case s.blocked > 0:
+		s.outcome = evictionStateBlocked
+		if s.message == "" {
+			s.message = "eviction is blocked"
+		}
+	case s.rateLimited > 0:
+		s.outcome = evictionStateRateLimited
+		otherSkipped := s.skipped - s.rateLimited
+		if otherSkipped < 0 {
+			otherSkipped = 0
+		}
+		s.message = fmt.Sprintf("rate-limited %d eligible Pod(s); evicted %d; skipped %d", s.rateLimited, s.evicted, otherSkipped)
+	case s.attempted > 0:
+		s.outcome = evictionStateCompleted
+		if s.message == "" {
+			s.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d", s.evicted, s.skipped)
+		}
+	case s.audited > 0:
+		s.outcome = evictionStateAuditOnly
+		if s.message == "" {
+			s.message = fmt.Sprintf("audit only: %d eligible Pod(s); skipped %d", s.audited, s.skipped)
+		}
+	default:
+		s.outcome = evictionStateNoEligible
+		if s.message == "" {
+			s.message = fmt.Sprintf("no eligible Pods; skipped %d", s.skipped)
+		}
+	}
+}
+
+func boundedEvictionReason(reason string) string {
+	switch reason {
+	case "not-opted-in", "protected-namespace", "terminating", "mirror-static", "daemonset-owned",
+		"unmanaged-pod", "direct-pinned", "node-selector", "required-node-affinity", "critical-priority",
+		"hostpath-volume", "local-emptydir", "pvc-lookup-failed", "pvc-not-bound", "pvc-rwo",
+		"pv-lookup-failed", "local-pv", "pvc-not-allowed", "completed-pod", "eligible", "audit",
+		"rate-limited", "missing-pod-identity", "api-error", "pdb-blocked", "eviction-conflict",
+		"pod-gone", "accepted", "retry-backoff":
+		return reason
+	default:
+		return "unclassified"
+	}
+}
+
+func boundedBlockerReason(reason string) string {
+	switch reason {
+	case "pdb-blocked", "api-error", "eviction-conflict", "pod-gone", "retry-backoff":
+		return reason
+	default:
+		return "api-error"
+	}
 }
 
 // evictionClass is the safety contract for one live enrollment. Duplicate
@@ -194,11 +300,15 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 	now := r.clock().Now()
 	if !policy.Enabled && !policy.Audit {
 		r.retries.prune(now, node.Name, nil)
+		summary.outcome = evictionStateDisabled
+		summary.message = "eviction is disabled"
 		return summary, nil
 	}
 	class := r.evictionClass(activity, node, desired, now)
 	if class == evictionClassNone {
 		r.retries.prune(now, node.Name, nil)
+		summary.outcome = evictionStateInactive
+		summary.message = "eviction policy is inactive for the current node state"
 		return summary, nil
 	}
 
@@ -239,13 +349,14 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		}
 		if remaining := r.retries.remaining(key, now); remaining > 0 {
 			summary.blocked++
-			summary.message = "eviction retry backoff is pending"
+			summary.noteBlocker("retry-backoff", "eviction retry backoff is pending")
 			summary.retryAfter(remaining)
 			continue
 		}
 		if !allowLossy {
 			if regularAttempted >= policy.MaxPerReconcile {
 				summary.skipped++
+				summary.rateLimited++
 				observeEviction(evictionOutcomeSkipped, "rate-limited")
 				continue
 			}
@@ -256,6 +367,7 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			}
 			if lossyAttempted >= maxLossy {
 				summary.skipped++
+				summary.rateLimited++
 				observeEviction(evictionOutcomeSkipped, "rate-limited")
 				continue
 			}
@@ -291,7 +403,7 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 				reason = "pod-gone"
 			}
 			observeEviction(evictionOutcomeBlocked, reason)
-			summary.message = fmt.Sprintf("eviction blocked for %s/%s (%s); retrying", pod.Namespace, pod.Name, reason)
+			summary.noteBlocker(reason, fmt.Sprintf("eviction blocked for %s/%s (%s); retrying", pod.Namespace, pod.Name, reason))
 			r.retries.block(key, r.clock().Now().Add(policy.RetryBackoff))
 			summary.retryAfter(policy.RetryBackoff)
 			continue
@@ -299,15 +411,11 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		summary.evicted++
 		r.retries.forget(key)
 		observeEviction(evictionOutcomeEvicted, "accepted")
-		summary.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d", summary.evicted, summary.skipped)
-	}
-	if summary.message == "" {
-		if summary.audited > 0 {
-			summary.message = fmt.Sprintf("audit only: %d eligible Pod(s); skipped %d", summary.audited, summary.skipped)
-		} else {
-			summary.message = fmt.Sprintf("no eligible Pods; skipped %d", summary.skipped)
+		if summary.blocked == 0 {
+			summary.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d", summary.evicted, summary.skipped)
 		}
 	}
+	summary.classify()
 	return summary, nil
 }
 
@@ -401,4 +509,6 @@ func hasTaint(node *corev1.Node, key, value string, effect corev1.TaintEffect) b
 	return false
 }
 
-func observeEviction(outcome, reason string) { evictionOutcomes.WithLabelValues(outcome, reason).Inc() }
+func observeEviction(outcome, reason string) {
+	evictionOutcomes.WithLabelValues(outcome, boundedEvictionReason(reason)).Inc()
+}

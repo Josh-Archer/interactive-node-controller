@@ -65,6 +65,40 @@ spec:
                     key: {type: string}
                     value: {type: string}
                     effect: {type: string, enum: [NoSchedule, PreferNoSchedule]}
+                admission:
+                  type: object
+                  description: >-
+                    Controller-owned scheduling fence. admitted is true only
+                    while this controller stands down its managed taint and sets
+                    availability.interactive-node.io/schedulable for workloads
+                    that select that label. This does not mean the kube-scheduler
+                    can place an arbitrary workload on the Node.
+                  properties:
+                    admitted:
+                      type: boolean
+                    reason:
+                      type: string
+                      maxLength: 64
+                    message:
+                      type: string
+                    heartbeatValid:
+                      type: boolean
+                    heartbeatAgeSeconds:
+                      type: integer
+                      format: int64
+                      minimum: 0
+                    burstTaint:
+                      type: object
+                      properties:
+                        configured: {type: boolean}
+                        desired: {type: boolean}
+                        applied: {type: boolean}
+                    nextTransition:
+                      type: string
+                      format: date-time
+                    nextTransitionReason:
+                      type: string
+                      enum: [heartbeat, hold, window]
                 conditions:
                   type: array
                   x-kubernetes-list-type: map

@@ -74,9 +74,57 @@ type ManagedTaintStatus struct {
 	Effect string `json:"effect"`
 }
 
+// BurstTaintStatus is the optional secondary NoSchedule fence. Applied matches
+// the taint on the Node after a successful reconcile. Desired is the fence the
+// controller wants while the node is not in the fresh-idle stand-down.
+type BurstTaintStatus struct {
+	Configured bool `json:"configured"`
+	Desired    bool `json:"desired"`
+	Applied    bool `json:"applied"`
+}
+
+// AdmissionStatus is controller-owned. Admitted is true only while this
+// controller stands down its managed taint and sets
+// availability.interactive-node.io/schedulable for workloads that select that
+// label. This does not mean the kube-scheduler can place an arbitrary
+// workload on the Node.
+//
+// HeartbeatValid and HeartbeatAgeSeconds describe the heartbeat that produced
+// the node policy. When several enrollments target one Node, that heartbeat
+// belongs to the winning enrollment, which can differ from this object's
+// status.heartbeatAt.
+type AdmissionStatus struct {
+	Admitted             bool             `json:"admitted"`
+	Reason               string           `json:"reason"`
+	Message              string           `json:"message,omitempty"`
+	HeartbeatValid       bool             `json:"heartbeatValid"`
+	HeartbeatAgeSeconds  *int64           `json:"heartbeatAgeSeconds,omitempty"`
+	BurstTaint           BurstTaintStatus `json:"burstTaint"`
+	NextTransition       *metav1.Time     `json:"nextTransition,omitempty"`
+	NextTransitionReason string           `json:"nextTransitionReason,omitempty"`
+}
+
+func (in *AdmissionStatus) DeepCopy() *AdmissionStatus {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.HeartbeatAgeSeconds != nil {
+		age := *in.HeartbeatAgeSeconds
+		out.HeartbeatAgeSeconds = &age
+	}
+	if in.NextTransition != nil {
+		next := *in.NextTransition
+		out.NextTransition = &next
+	}
+	return &out
+}
+
 // NodeActivityStatus is host-reported state plus controller-owned conditions.
 // The reporter uses a JSON merge patch, so absent controller fields are
-// preserved while it refreshes the host-owned fields.
+// preserved while it refreshes the host-owned fields. Admission is
+// controller-owned; the reporter leaves it nil and omitempty keeps the patch
+// from clearing it.
 type NodeActivityStatus struct {
 	State        State               `json:"state"`
 	Activity     Activity            `json:"activity"`
@@ -87,6 +135,7 @@ type NodeActivityStatus struct {
 	FailClosed   bool                `json:"failClosed"`
 	Conditions   []metav1.Condition  `json:"conditions,omitempty"`
 	ManagedTaint *ManagedTaintStatus `json:"managedTaint,omitempty"`
+	Admission    *AdmissionStatus    `json:"admission,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -117,6 +166,9 @@ func (in *NodeActivity) DeepCopyInto(out *NodeActivity) {
 	if in.Status.ManagedTaint != nil {
 		out.Status.ManagedTaint = new(ManagedTaintStatus)
 		*out.Status.ManagedTaint = *in.Status.ManagedTaint
+	}
+	if in.Status.Admission != nil {
+		out.Status.Admission = in.Status.Admission.DeepCopy()
 	}
 }
 

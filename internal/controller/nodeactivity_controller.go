@@ -113,7 +113,17 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		if err := r.setCondition(ctx, activity, metav1.ConditionFalse, "InvalidEnrollment", "spec.nodeName is required", nil); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.setScheduleCondition(ctx, activity, scheduleErr)
+		if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
+			return ctrl.Result{}, err
+		}
+		valid, age := heartbeatObservation(activity.Status.HeartbeatAt, r.clock().Now(), r.Policy.StaleAfter)
+		return ctrl.Result{}, r.setAdmission(ctx, activity, &availabilityv1alpha1.AdmissionStatus{
+			Admitted:            false,
+			Reason:              admissionInvalidEnrollment,
+			Message:             "spec.nodeName is required",
+			HeartbeatValid:      valid,
+			HeartbeatAgeSeconds: age,
+		})
 	}
 
 	if !controllerutil.ContainsFinalizer(activity, NodeActivityFinalizer) {
@@ -131,8 +141,8 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	observeWindowMetrics(activity.Spec.NodeName, protection.scheduled, protection.nextWindow)
 	desired, reason, requeueAfter := protection.taint, protection.reason, protection.requeueAfter
+	admitted := r.policyAdmitted(protection, now)
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -143,20 +153,23 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 			if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
 				return ctrl.Result{}, err
 			}
+			if err := r.setAdmission(ctx, activity, r.admissionStatus(protection, false, false, admissionNodeNotFound)); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.setEvictionCondition(ctx, activity, r.evictionWithoutPods(true)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	fresh := protection.source != nil && !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
-	isSchedulable := fresh && protection.source.Status.State == availabilityv1alpha1.StateIdle && protection.source.Status.Activity == availabilityv1alpha1.ActivityIdle && desired == nil
-
-	changedLabel := reconcileSchedulableLabel(node, isSchedulable)
+	changedLabel := reconcileSchedulableLabel(node, admitted)
 	changedPrimary := reconcileOwnedTaint(node, r.Policy.Key, desired)
 	var changedBurst bool
 	if r.Policy.BurstTaintKey != "" {
 		var desiredBurst *corev1.Taint
-		if !isSchedulable {
+		if !admitted {
 			desiredBurst = &corev1.Taint{
 				Key:    r.Policy.BurstTaintKey,
 				Value:  r.Policy.FailClosedValue,
@@ -184,11 +197,12 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
 		return ctrl.Result{}, err
 	}
-	if protection.source != nil {
-		fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
-		observeActivityAndTaint(activity.Spec.NodeName, protection.source.Status.State, protection.source.Status.Activity, desired, fresh)
+	burstApplied := r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule)
+	if err := r.setAdmission(ctx, activity, r.admissionStatus(protection, admitted, burstApplied, "")); err != nil {
+		return ctrl.Result{}, err
 	}
-	evictionSummary := evictionSummary{}
+	r.observeNodeSignals(activity.Spec.NodeName, protection, burstApplied, scheduleErr != nil)
+	evictionSummary := r.evictionWithoutPods(false)
 	if protection.count == 1 {
 		evictionSummary, err = r.reconcileEvictions(ctx, activity, node, desired)
 		if err != nil {
@@ -198,11 +212,96 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.setEvictionCondition(ctx, activity, evictionSummary); err != nil {
 		return ctrl.Result{}, err
 	}
+	observeEvictionStatus(activity.Spec.NodeName, evictionSummary.outcome, evictionSummary.blockerReason)
 	result := ctrl.Result{RequeueAfter: requeueAfter}
 	if evictionSummary.requeueAfter > 0 && (result.RequeueAfter <= 0 || evictionSummary.requeueAfter < result.RequeueAfter) {
 		result.RequeueAfter = evictionSummary.requeueAfter
 	}
 	return result, nil
+}
+
+func (r *NodeActivityReconciler) policyAdmitted(protection enrollmentProtection, now time.Time) bool {
+	if protection.source == nil {
+		return false
+	}
+	fresh := heartbeatFresh(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter)
+	return controllerAdmitted(fresh, protection.source.Status.State, protection.source.Status.Activity, protection.taint)
+}
+
+func (r *NodeActivityReconciler) evictionWithoutPods(nodeMissing bool) evictionSummary {
+	if !r.Eviction.normalized().Enabled && !r.Eviction.normalized().Audit {
+		return evictionSummary{outcome: evictionStateDisabled, message: "eviction is disabled"}
+	}
+	if nodeMissing {
+		return evictionSummary{outcome: evictionStateInactive, message: "eviction policy is inactive because the enrolled node does not exist"}
+	}
+	return evictionSummary{outcome: evictionStateInactive, message: "eviction suppressed while enrollment is ambiguous"}
+}
+
+func (r *NodeActivityReconciler) admissionStatus(protection enrollmentProtection, admitted, burstApplied bool, reasonOverride string) *availabilityv1alpha1.AdmissionStatus {
+	now := r.clock().Now()
+	heartbeatAt := time.Time{}
+	if protection.source != nil {
+		heartbeatAt = protection.source.Status.HeartbeatAt
+	}
+	valid, age := heartbeatObservation(heartbeatAt, now, r.Policy.StaleAfter)
+	reason := protection.admissionReason
+	message := protection.reason
+	if reasonOverride == admissionNodeNotFound {
+		reason = admissionNodeNotFound
+		message = "enrolled node does not exist"
+		admitted = false
+		burstApplied = false
+	}
+	if reason == "" {
+		reason = admissionUnsupportedState
+	}
+	status := &availabilityv1alpha1.AdmissionStatus{
+		Admitted:            admitted,
+		Reason:              reason,
+		Message:             message,
+		HeartbeatValid:      valid,
+		HeartbeatAgeSeconds: age,
+		BurstTaint: availabilityv1alpha1.BurstTaintStatus{
+			Configured: r.Policy.BurstTaintKey != "",
+			Desired:    r.Policy.BurstTaintKey != "" && !r.policyAdmitted(protection, now),
+			Applied:    burstApplied,
+		},
+	}
+	if !protection.nextTransition.IsZero() {
+		// UTC drops the monotonic clock and the window location so later
+		// reconciles compare equal after an API round trip.
+		next := metav1.NewTime(protection.nextTransition.UTC())
+		status.NextTransition = &next
+		status.NextTransitionReason = protection.transitionReason
+	}
+	return status
+}
+
+func (r *NodeActivityReconciler) setAdmission(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, admission *availabilityv1alpha1.AdmissionStatus) error {
+	before := activity.DeepCopy()
+	activity.Status.Admission = admission
+	if reflect.DeepEqual(before.Status, activity.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, activity, client.MergeFrom(before))
+}
+
+func (r *NodeActivityReconciler) observeNodeSignals(nodeName string, protection enrollmentProtection, burstApplied, scheduleInvalid bool) {
+	if strings.TrimSpace(nodeName) == "" || protection.source == nil {
+		clearNodeMetrics(nodeName)
+		return
+	}
+	now := r.clock().Now()
+	fresh := heartbeatFresh(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter)
+	reason := protection.admissionReason
+	if reason == "" {
+		reason = admissionUnsupportedState
+	}
+	observeWindowMetrics(nodeName, protection.scheduled, protection.nextWindow)
+	observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, fresh)
+	observeAdmission(nodeName, protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter, reason, r.Policy.BurstTaintKey != "", burstApplied, protection.nextTransition)
+	observeConfigInvalid(nodeName, scheduleInvalid)
 }
 
 func (r *NodeActivityReconciler) setEvictionCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, summary evictionSummary) error {
@@ -255,10 +354,14 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	}
 	if protection.source == nil {
 		clearNodeMetrics(nodeName)
-	} else {
-		observeWindowMetrics(nodeName, protection.scheduled, protection.nextWindow)
-		fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
-		observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, fresh)
+		return nil
+	}
+	burstApplied := r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule)
+	r.observeNodeSignals(nodeName, protection, burstApplied, false)
+	if !r.Eviction.normalized().Enabled && !r.Eviction.normalized().Audit {
+		observeEvictionStatus(nodeName, evictionStateDisabled, "")
+	} else if protection.count != 1 {
+		observeEvictionStatus(nodeName, evictionStateInactive, "")
 	}
 	return nil
 }
@@ -325,6 +428,68 @@ func (r *NodeActivityReconciler) clock() clock.Clock {
 }
 
 func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.NodeActivity, now time.Time) (*corev1.Taint, string, time.Duration, bool, time.Time, error) {
+	decision, err := r.decidePolicy(activity, now)
+	if err != nil {
+		return nil, "", 0, false, time.Time{}, err
+	}
+	return decision.taint, decision.message, decision.requeueAfter, decision.scheduled, decision.nextWindow, nil
+}
+
+const (
+	admissionFreshIdle            = "fresh-idle"
+	admissionActiveGame           = "active-game"
+	admissionActiveInteractive    = "active-interactive"
+	admissionHold                 = "availability-hold"
+	admissionScheduledGame        = "scheduled-game"
+	admissionScheduledInteractive = "scheduled-interactive"
+	admissionScheduledIdle        = "scheduled-idle"
+	admissionStaleHeartbeat       = "stale-heartbeat"
+	admissionMissingHeartbeat     = "missing-heartbeat"
+	admissionInvalidSchedule      = "invalid-schedule"
+	admissionUnknownState         = "unknown-state"
+	admissionStaleState           = "stale-state"
+	admissionUnsupportedActivity  = "unsupported-activity"
+	admissionUnsupportedState     = "unsupported-state"
+	admissionNodeNotFound         = "node-not-found"
+	admissionInvalidEnrollment    = "invalid-enrollment"
+
+	transitionHeartbeat = "heartbeat"
+	transitionHold      = "hold"
+	transitionWindow    = "window"
+)
+
+type policyDecision struct {
+	taint            *corev1.Taint
+	message          string
+	admissionReason  string
+	requeueAfter     time.Duration
+	scheduled        bool
+	nextWindow       time.Time
+	nextTransition   time.Time
+	transitionReason string
+}
+
+type transitionCandidate struct {
+	at   time.Time
+	kind string
+}
+
+func earliestTransition(now time.Time, candidates ...transitionCandidate) (time.Time, string) {
+	var best time.Time
+	kind := ""
+	for _, candidate := range candidates {
+		if candidate.at.IsZero() || !candidate.at.After(now) || candidate.kind == "" {
+			continue
+		}
+		if best.IsZero() || candidate.at.Before(best) {
+			best = candidate.at
+			kind = candidate.kind
+		}
+	}
+	return best, kind
+}
+
+func (r *NodeActivityReconciler) decidePolicy(activity *availabilityv1alpha1.NodeActivity, now time.Time) (policyDecision, error) {
 	window, nextWindow, windowWait, windowErr := evaluateWindows(activity.Spec, now)
 	if windowErr != nil {
 		// Invalid windows are surfaced as InvalidSchedule. Ignore them for
@@ -333,63 +498,139 @@ func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.Nod
 		nextWindow = time.Time{}
 		windowWait = 0
 	}
-	stale := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
-	if stale {
-		t, m, d := r.failClosed("host heartbeat is missing or stale")
-		return t, m, minPositive(d, windowWait), false, nextWindow, nil
+	decision := policyDecision{nextWindow: nextWindow}
+	var windowBoundary transitionCandidate
+	if windowWait > 0 {
+		windowBoundary = transitionCandidate{at: now.Add(windowWait), kind: transitionWindow}
 	}
-	remaining := activity.Status.HeartbeatAt.Add(r.Policy.StaleAfter).Sub(now)
+	if !heartbeatFresh(activity.Status.HeartbeatAt, now, r.Policy.StaleAfter) {
+		taint, message, delay := r.failClosed("host heartbeat is missing or stale")
+		decision.taint = taint
+		decision.message = message
+		decision.requeueAfter = minPositive(delay, windowWait)
+		decision.admissionReason = admissionStaleHeartbeat
+		if activity.Status.HeartbeatAt.IsZero() {
+			decision.admissionReason = admissionMissingHeartbeat
+		}
+		return decision, nil
+	}
+	heartbeatDeadline := activity.Status.HeartbeatAt.Add(r.Policy.StaleAfter)
+	remaining := heartbeatDeadline.Sub(now)
 	if remaining <= 0 {
 		remaining = time.Second
 	}
+	heartbeat := transitionCandidate{at: heartbeatDeadline, kind: transitionHeartbeat}
 	switch activity.Status.State {
 	case availabilityv1alpha1.StateIdle:
 		if holdUntil := holdExpiry(activity); holdUntil.After(now) {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "time-boxed availability hold", minPositive(remaining, holdUntil.Sub(now)), false, nextWindow, nil
+			decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}
+			decision.message = "time-boxed availability hold"
+			decision.admissionReason = admissionHold
+			decision.requeueAfter = minPositive(remaining, holdUntil.Sub(now))
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, transitionCandidate{at: holdUntil, kind: transitionHold})
+			return decision, nil
 		}
 		if window != nil {
+			decision.scheduled = true
+			decision.requeueAfter = minPositive(remaining, windowWait)
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, windowBoundary)
 			switch window.state {
 			case "game":
-				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "scheduled game window", minPositive(remaining, windowWait), true, nextWindow, nil
+				decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}
+				decision.message = "scheduled game window"
+				decision.admissionReason = admissionScheduledGame
 			case "interactive":
-				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "scheduled interactive window", minPositive(remaining, windowWait), true, nextWindow, nil
+				decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}
+				decision.message = "scheduled interactive window"
+				decision.admissionReason = admissionScheduledInteractive
 			default:
-				return nil, "scheduled idle-allowed window", minPositive(remaining, windowWait), true, nextWindow, nil
+				decision.message = "scheduled idle-allowed window"
+				decision.admissionReason = admissionScheduledIdle
 			}
+			return decision, nil
 		}
 		if windowErr != nil {
 			// A fresh idle heartbeat must not stay admitted when the schedule
 			// cannot prove that no protected window is open.
-			t, m, d := r.failClosed("availability schedule is invalid")
-			return t, m, minPositive(d, windowWait), false, nextWindow, nil
+			taint, message, delay := r.failClosed("availability schedule is invalid")
+			decision.taint = taint
+			decision.message = message
+			decision.admissionReason = admissionInvalidSchedule
+			decision.requeueAfter = minPositive(delay, windowWait)
+			if taint == nil {
+				decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat)
+			}
+			return decision, nil
 		}
-		return nil, "host is idle; managed taint removed", minPositive(remaining, windowWait), false, nextWindow, nil
+		decision.message = "host is idle; managed taint removed"
+		decision.admissionReason = admissionFreshIdle
+		decision.requeueAfter = minPositive(remaining, windowWait)
+		decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, windowBoundary)
+		return decision, nil
 	case availabilityv1alpha1.StateActive:
 		if activity.Status.Activity == availabilityv1alpha1.ActivityGame {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "host is running an active game", minPositive(remaining, windowWait), false, nextWindow, nil
+			decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}
+			decision.message = "host is running an active game"
+			decision.admissionReason = admissionActiveGame
+			decision.requeueAfter = minPositive(remaining, windowWait)
+			// A live game keeps its taint across window boundaries. The heartbeat
+			// deadline is the next clock-driven policy change.
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat)
+			return decision, nil
 		}
 		if holdUntil := holdExpiry(activity); holdUntil.After(now) {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "time-boxed availability hold", minPositive(remaining, holdUntil.Sub(now)), false, nextWindow, nil
+			decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}
+			decision.message = "time-boxed availability hold"
+			decision.admissionReason = admissionHold
+			decision.requeueAfter = minPositive(remaining, holdUntil.Sub(now))
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, transitionCandidate{at: holdUntil, kind: transitionHold})
+			return decision, nil
 		}
-		if window != nil {
+		if window != nil && (window.state == "game" || window.state == "idle-allowed") {
+			decision.scheduled = true
+			decision.requeueAfter = minPositive(remaining, windowWait)
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, windowBoundary)
 			if window.state == "game" {
-				return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}, "scheduled game window", minPositive(remaining, windowWait), true, nextWindow, nil
+				decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.ActiveValue, Effect: corev1.TaintEffectNoSchedule}
+				decision.message = "scheduled game window"
+				decision.admissionReason = admissionScheduledGame
+				return decision, nil
 			}
-			if window.state == "idle-allowed" {
-				return nil, "scheduled idle-allowed window", minPositive(remaining, windowWait), true, nextWindow, nil
-			}
+			decision.message = "scheduled idle-allowed window"
+			decision.admissionReason = admissionScheduledIdle
+			return decision, nil
 		}
 		if activity.Status.Activity == availabilityv1alpha1.ActivityInteractive {
-			return &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}, "host is interactive", minPositive(remaining, windowWait), false, nextWindow, nil
+			decision.taint = &corev1.Taint{Key: r.Policy.Key, Value: r.Policy.InteractiveValue, Effect: corev1.TaintEffectPreferNoSchedule}
+			decision.message = "host is interactive"
+			decision.admissionReason = admissionActiveInteractive
+			decision.requeueAfter = minPositive(remaining, windowWait)
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, heartbeat, windowBoundary)
+			return decision, nil
 		}
-		t, m, d := r.failClosed("active state has an unsupported activity")
-		return t, m, minPositive(d, windowWait), false, nextWindow, nil
+		taint, message, delay := r.failClosed("active state has an unsupported activity")
+		decision.taint = taint
+		decision.message = message
+		decision.admissionReason = admissionUnsupportedActivity
+		decision.requeueAfter = minPositive(delay, windowWait)
+		return decision, nil
 	case availabilityv1alpha1.StateUnknown, availabilityv1alpha1.StateStale:
-		t, m, d := r.failClosed("host state is unknown or stale")
-		return t, m, minPositive(d, windowWait), false, nextWindow, nil
+		taint, message, delay := r.failClosed("host state is unknown or stale")
+		decision.taint = taint
+		decision.message = message
+		decision.requeueAfter = minPositive(delay, windowWait)
+		decision.admissionReason = admissionUnknownState
+		if activity.Status.State == availabilityv1alpha1.StateStale {
+			decision.admissionReason = admissionStaleState
+		}
+		return decision, nil
 	default:
-		t, m, d := r.failClosed("host reported an unsupported state")
-		return t, m, minPositive(d, windowWait), false, nextWindow, nil
+		taint, message, delay := r.failClosed("host reported an unsupported state")
+		decision.taint = taint
+		decision.message = message
+		decision.admissionReason = admissionUnsupportedState
+		decision.requeueAfter = minPositive(delay, windowWait)
+		return decision, nil
 	}
 }
 

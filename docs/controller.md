@@ -94,13 +94,50 @@ same cases at startup. While the key is set, the controller applies
 and removes that taint when the node is fresh-idle. Every fresh-idle node
 receives `availability.interactive-node.io/schedulable=true`.
 
-The controller records a `TaintApplied` condition and `status.managedTaint`.
-The condition makes malformed enrollment, missing Nodes, and applied policy
-observable without inspecting the Node manually. Current activity state and
-managed taints are exported as Prometheus metrics
-`interactive_node_controller_activity{node,state,activity}`,
-`interactive_node_controller_taint{node,key,value,effect}`, and
-`interactive_node_controller_schedulable{node}` (1 if the controller is standing down with a fresh idle heartbeat and no managed taint, 0 otherwise).
+The controller records a `TaintApplied` condition, `status.managedTaint`, and
+`status.admission`. The condition makes malformed enrollment, missing Nodes, and
+applied policy observable without inspecting the Node manually. `status.admission`
+is controller-owned. The host reporter leaves it unset, so its status merge patch
+does not clear it.
+
+`status.admission.admitted` is true only while this controller stands down: the
+winning enrollment has a fresh idle heartbeat, no managed taint is desired, and
+the Node is labeled `availability.interactive-node.io/schedulable=true` for
+workloads that select that label. This does not mean the kube-scheduler can
+place an arbitrary workload on the Node. Other taints, resources, affinity, and
+the workload's own selector still apply.
+
+`heartbeatValid` and `heartbeatAgeSeconds` describe the heartbeat that produced
+the node policy. `reason` is a bounded admission code such as `fresh-idle`,
+`active-game`, `stale-heartbeat`, `missing-heartbeat`, or `invalid-schedule`.
+`burstTaint.configured`, `desired`, and `applied` describe the optional burst
+NoSchedule fence. `nextTransition` and `nextTransitionReason` (`heartbeat`,
+`hold`, or `window`) are the next clock boundary that can change that policy.
+
+Scheduled-window telemetry stays on `inc_window_active` and
+`inc_next_window_start_timestamp_seconds`. Those series report whether a window
+or its lead time is active and when the next window starts. `nextTransition`
+can be earlier than that start when a lead boundary, a window end, a hold, or
+the heartbeat deadline comes first.
+
+Current activity, admission, and eviction state are exported as Prometheus
+metrics:
+
+- `interactive_node_controller_activity{node,state,activity}`
+- `interactive_node_controller_taint{node,key,value,effect}`
+- `interactive_node_controller_schedulable{node}` is 1 only for the fresh-idle stand-down above, and 0 otherwise
+- `interactive_node_controller_admission{node,reason}` is 1 on the active bounded reason
+- `interactive_node_controller_heartbeat_valid{node}` and `interactive_node_controller_heartbeat_age_seconds{node}`
+- `interactive_node_controller_burst_taint{node}` is 1 when the configured burst taint is present and 0 when the key is configured but the taint is absent
+- `interactive_node_controller_next_transition_timestamp_seconds{node}`
+- `interactive_node_controller_config_invalid{node,reason="schedule"}` is 1 while `InvalidSchedule` is true
+- `interactive_node_controller_eviction_outcome{node,outcome}` and `interactive_node_controller_eviction_blocked{node,reason}`
+
+The schedulable gauge and the admission gauge use the same stand-down rule as
+the Node label. They do not report that arbitrary workloads can schedule.
+Deleting the enrollment or losing the Node clears these per-node series.
+Example queries and alerts are in
+[`examples/monitoring`](../examples/monitoring/queries.md).
 
 ## Install boundary
 
@@ -226,8 +263,28 @@ selector can target a scarce capability or a single node, so the controller
 does not attempt a scheduler feasibility proof during eviction of standard
 workloads.
 Skipped and blocked outcomes are exported in
-`interactive_node_controller_evictions_total{outcome,reason}` and summarized
-by the `Eviction` NodeActivity condition. Workload specs are never mutated.
+`interactive_node_controller_evictions_total{outcome,reason}`. Counter reasons
+are a fixed set (`not-opted-in`, `protected-namespace`, `pdb-blocked`,
+`rate-limited`, and the other safety gates). Pod name and namespace are never
+metric labels. The current decision is also a gauge,
+`interactive_node_controller_eviction_outcome{node,outcome}`, and while the
+decision is blocked, `interactive_node_controller_eviction_blocked{node,reason}`
+uses only `pdb-blocked`, `api-error`, `eviction-conflict`, `pod-gone`, or
+`retry-backoff`.
+
+The `Eviction` condition distinguishes the outcomes operators have to act on:
+
+| Outcome | Condition reason | When |
+| --- | --- | --- |
+| disabled | `EvictionDisabled` | `eviction.enabled` and `eviction.audit` are both false |
+| audit-only | `AuditOnly` | audit mode found at least one eligible Pod and did not call the Eviction API |
+| inactive policy | `EvictionInactive` | eviction is enabled or auditing, but this node state does not authorize it, enrollment is ambiguous, or the Node does not exist |
+| no eligible pods | `NoEligiblePods` | the policy is active and every Pod was skipped by a safety gate, or no Pods are present. This is not `EvictionDisabled` |
+| blocked | `EvictionBlocked` | a PDB, API error, conflict, missing Pod, or retry backoff stopped an eligible Pod |
+| rate-limited | `EvictionRateLimited` | eligible Pods remain above the per-reconcile cap |
+| completed | `EvictionCompleted` | every attempted eviction was accepted and nothing remains rate-limited |
+
+Workload specs are never mutated.
 
 ## Phase 4 home canary GitOps integration
 
