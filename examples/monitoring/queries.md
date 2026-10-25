@@ -56,7 +56,7 @@ inc_next_window_start_timestamp_seconds
 interactive_node_controller_eviction_outcome
 ```
 
-Outcomes are `disabled`, `audit-only`, `inactive`, `no-eligible-pods`, `blocked`, `rate-limited`, and `completed`. `no-eligible-pods` means eviction is enabled or auditing and nothing passed the safety gates. It is not `disabled`.
+Outcomes are `disabled`, `audit-only`, `inactive`, `no-eligible-pods`, `blocked`, `budget-waiting`, and `completed`. `no-eligible-pods` means eviction is enabled or auditing and nothing passed the safety gates. It is not `disabled`.
 
 Blocked pods, without using Pod names as labels:
 
@@ -64,4 +64,4 @@ Blocked pods, without using Pod names as labels:
 interactive_node_controller_eviction_blocked
 ```
 
-The `Eviction` condition uses `EvictionDisabled`, `AuditOnly`, `EvictionInactive`, `NoEligiblePods`, `EvictionBlocked`, `EvictionRateLimited`, or `EvictionCompleted`. Counter `interactive_node_controller_evictions_total` keeps the same bounded `reason` values as the safety gates.
+The `Eviction` condition uses `EvictionDisabled`, `AuditOnly`, `EvictionInactive`, `NoEligiblePods`, `EvictionBlocked`, `BudgetWaiting`, or `EvictionCompleted`. Counter `interactive_node_controller_evictions_total` keeps the same bounded `reason` values as the safety gates.

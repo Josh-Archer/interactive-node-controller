@@ -33,21 +33,21 @@ const (
 	evictionOutcomeSkipped   = "skipped"
 	evictionOutcomeBlocked   = "blocked"
 
-	evictionStateDisabled    = "disabled"
-	evictionStateAuditOnly   = "audit-only"
-	evictionStateInactive    = "inactive"
-	evictionStateNoEligible  = "no-eligible-pods"
-	evictionStateBlocked     = "blocked"
-	evictionStateRateLimited = "rate-limited"
-	evictionStateCompleted   = "completed"
+	evictionStateDisabled      = "disabled"
+	evictionStateAuditOnly     = "audit-only"
+	evictionStateInactive      = "inactive"
+	evictionStateNoEligible    = "no-eligible-pods"
+	evictionStateBlocked       = "blocked"
+	evictionStateBudgetWaiting = "budget-waiting"
+	evictionStateCompleted     = "completed"
 
-	EvictionReasonDisabled    = "EvictionDisabled"
-	EvictionReasonAuditOnly   = "AuditOnly"
-	EvictionReasonInactive    = "EvictionInactive"
-	EvictionReasonNoEligible  = "NoEligiblePods"
-	EvictionReasonBlocked     = "EvictionBlocked"
-	EvictionReasonRateLimited = "EvictionRateLimited"
-	EvictionReasonCompleted   = "EvictionCompleted"
+	EvictionReasonDisabled      = "EvictionDisabled"
+	EvictionReasonAuditOnly     = "AuditOnly"
+	EvictionReasonInactive      = "EvictionInactive"
+	EvictionReasonNoEligible    = "NoEligiblePods"
+	EvictionReasonBlocked       = "EvictionBlocked"
+	EvictionReasonBudgetWaiting = "BudgetWaiting"
+	EvictionReasonCompleted     = "EvictionCompleted"
 )
 
 func isLossyEvictionAllowed(pod *corev1.Pod) bool {
@@ -90,17 +90,40 @@ type EvictionPolicy struct {
 	Enabled             bool
 	Audit               bool
 	ProtectedNamespaces map[string]struct{}
-	MaxPerReconcile     int
-	RetryBackoff        time.Duration
-	EvictableLabel      string
+	// MaxPerReconcile is the default steady allowance for both classes when a
+	// class-specific budget field is zero. It is applied once per budget
+	// interval, not once per reconcile. The flag name is historical.
+	MaxPerReconcile int
+	// BudgetInterval is the default refill window. Zero defaults to one minute.
+	BudgetInterval time.Duration
+	RetryBackoff   time.Duration
+	// RetryJitter is the maximum stable per-Pod-UID delay added to a blocked
+	// retry. Zero disables jitter. Values above RetryBackoff are capped at the
+	// backoff so the extra wait stays bounded.
+	RetryJitter    time.Duration
+	EvictableLabel string
+	// StandardBudget and LossyBudget are independent. Lossy opt-in does not
+	// grant a hard-coded minimum; unset lossy fields use the same conservative
+	// defaults as standard pods.
+	StandardBudget EvictionBudget
+	LossyBudget    EvictionBudget
 }
 
 func (p EvictionPolicy) normalized() EvictionPolicy {
 	if p.MaxPerReconcile <= 0 {
 		p.MaxPerReconcile = 1
 	}
+	if p.BudgetInterval <= 0 {
+		p.BudgetInterval = time.Minute
+	}
 	if p.RetryBackoff <= 0 {
 		p.RetryBackoff = 30 * time.Second
+	}
+	if p.RetryJitter < 0 {
+		p.RetryJitter = 0
+	}
+	if p.RetryJitter > p.RetryBackoff {
+		p.RetryJitter = p.RetryBackoff
 	}
 	if strings.TrimSpace(p.EvictableLabel) == "" {
 		p.EvictableLabel = EvictableLabel
@@ -108,6 +131,8 @@ func (p EvictionPolicy) normalized() EvictionPolicy {
 	if p.ProtectedNamespaces == nil {
 		p.ProtectedNamespaces = map[string]struct{}{}
 	}
+	p.StandardBudget = p.StandardBudget.normalized(p.MaxPerReconcile, p.BudgetInterval)
+	p.LossyBudget = p.LossyBudget.normalized(p.MaxPerReconcile, p.BudgetInterval)
 	return p
 }
 
@@ -122,15 +147,24 @@ func (p EvictionPolicy) Validate() error {
 	if p.RetryBackoff <= 0 {
 		return fmt.Errorf("eviction-retry-backoff must be positive")
 	}
+	if p.BudgetInterval <= 0 || p.StandardBudget.Interval <= 0 || p.LossyBudget.Interval <= 0 {
+		return fmt.Errorf("eviction budget interval must be positive")
+	}
+	if p.StandardBudget.PerNode <= 0 || p.StandardBudget.Global <= 0 || p.LossyBudget.PerNode <= 0 || p.LossyBudget.Global <= 0 {
+		return fmt.Errorf("eviction budgets must be positive")
+	}
+	if p.StandardBudget.BurstPerNode <= 0 || p.StandardBudget.BurstGlobal <= 0 || p.LossyBudget.BurstPerNode <= 0 || p.LossyBudget.BurstGlobal <= 0 {
+		return fmt.Errorf("eviction burst allowances must be positive")
+	}
 	return nil
 }
 
 type evictionSummary struct {
-	audited, attempted, evicted, skipped, blocked, rateLimited int
-	outcome                                                    string
-	blockerReason                                              string
-	requeueAfter                                               time.Duration
-	message                                                    string
+	audited, attempted, evicted, skipped, blocked, deferred int
+	outcome                                                 string
+	blockerReason                                           string
+	requeueAfter                                            time.Duration
+	message                                                 string
 }
 
 func (s evictionSummary) condition(now time.Time, generation int64) metav1.Condition {
@@ -146,8 +180,8 @@ func (s evictionSummary) condition(now time.Time, generation int64) metav1.Condi
 		reason = EvictionReasonNoEligible
 	case evictionStateBlocked:
 		status, reason = metav1.ConditionFalse, EvictionReasonBlocked
-	case evictionStateRateLimited:
-		reason = EvictionReasonRateLimited
+	case evictionStateBudgetWaiting:
+		reason = EvictionReasonBudgetWaiting
 	case evictionStateCompleted:
 		reason = EvictionReasonCompleted
 	}
@@ -190,13 +224,14 @@ func (s *evictionSummary) classify() {
 		if s.message == "" {
 			s.message = "eviction is blocked"
 		}
-	case s.rateLimited > 0:
-		s.outcome = evictionStateRateLimited
-		otherSkipped := s.skipped - s.rateLimited
+	case s.deferred > 0:
+		// Eligible Pods remain and the reconcile is requeued for budget refill.
+		s.outcome = evictionStateBudgetWaiting
+		otherSkipped := s.skipped - s.deferred
 		if otherSkipped < 0 {
 			otherSkipped = 0
 		}
-		s.message = fmt.Sprintf("rate-limited %d eligible Pod(s); evicted %d; skipped %d", s.rateLimited, s.evicted, otherSkipped)
+		s.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d; %d eligible Pod(s) waiting for eviction budget", s.evicted, otherSkipped, s.deferred)
 	case s.attempted > 0:
 		s.outcome = evictionStateCompleted
 		if s.message == "" {
@@ -317,7 +352,6 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		return summary, err
 	}
 	r.retries.prune(now, node.Name, pods.Items)
-	var regularAttempted, lossyAttempted int
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		if pod.Spec.NodeName != node.Name {
@@ -353,39 +387,26 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			summary.retryAfter(remaining)
 			continue
 		}
-		if !allowLossy {
-			if regularAttempted >= policy.MaxPerReconcile {
-				summary.skipped++
-				summary.rateLimited++
-				observeEviction(evictionOutcomeSkipped, "rate-limited")
-				continue
-			}
-		} else {
-			maxLossy := 4
-			if policy.MaxPerReconcile > maxLossy {
-				maxLossy = policy.MaxPerReconcile
-			}
-			if lossyAttempted >= maxLossy {
-				summary.skipped++
-				summary.rateLimited++
-				observeEviction(evictionOutcomeSkipped, "rate-limited")
-				continue
-			}
-		}
 		// Bind the request to the exact object that passed the safety gates.
 		// A same-name replacement or metadata change must be re-evaluated.
+		// Missing identity does not spend budget.
 		uid, resourceVersion := pod.UID, pod.ResourceVersion
 		if uid == "" || resourceVersion == "" {
 			summary.skipped++
 			observeEviction(evictionOutcomeSkipped, "missing-pod-identity")
 			continue
 		}
-		summary.attempted++
-		if allowLossy {
-			lossyAttempted++
-		} else {
-			regularAttempted++
+		// Per-node and global buckets are time-based. A Pod still inside its
+		// retry deadline never reaches this spend. Refused candidates are
+		// requeued for the moment both buckets have a token again.
+		if ok, wait := r.budgets.tryTake(allowLossy, node.Name, now, policy); !ok {
+			summary.skipped++
+			summary.deferred++
+			observeEviction(evictionOutcomeSkipped, "rate-limited")
+			summary.retryAfter(wait)
+			continue
 		}
+		summary.attempted++
 		observeEviction(evictionOutcomeAttempted, "eligible")
 		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}}
 		if pod.Spec.TerminationGracePeriodSeconds != nil {
@@ -404,8 +425,9 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			}
 			observeEviction(evictionOutcomeBlocked, reason)
 			summary.noteBlocker(reason, fmt.Sprintf("eviction blocked for %s/%s (%s); retrying", pod.Namespace, pod.Name, reason))
-			r.retries.block(key, r.clock().Now().Add(policy.RetryBackoff))
-			summary.retryAfter(policy.RetryBackoff)
+			delay := blockedRetryDelay(key, policy, err)
+			r.retries.block(key, now.Add(delay))
+			summary.retryAfter(delay)
 			continue
 		}
 		summary.evicted++
@@ -414,6 +436,17 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		if summary.blocked == 0 {
 			summary.message = fmt.Sprintf("evicted %d eligible Pod(s); skipped %d", summary.evicted, summary.skipped)
 		}
+	}
+	if summary.message == "" {
+		if summary.audited > 0 {
+			summary.message = fmt.Sprintf("audit only: %d eligible Pod(s); skipped %d", summary.audited, summary.skipped)
+		} else if summary.deferred > 0 {
+			summary.message = fmt.Sprintf("eviction budget exhausted; %d eligible Pod(s) waiting for eviction budget", summary.deferred)
+		} else {
+			summary.message = fmt.Sprintf("no eligible Pods; skipped %d", summary.skipped)
+		}
+	} else if summary.deferred > 0 && !strings.Contains(summary.message, "waiting for eviction budget") {
+		summary.message = fmt.Sprintf("%s; %d eligible Pod(s) waiting for eviction budget", summary.message, summary.deferred)
 	}
 	summary.classify()
 	return summary, nil

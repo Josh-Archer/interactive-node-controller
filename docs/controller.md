@@ -167,8 +167,13 @@ preconditions. A replacement or changed Pod is blocked and must pass the
 safety gates again; missing identity metadata never permits an eviction.
 PDB throttling (`429 TooManyRequests`) and other API conflicts are recorded as
 blocked and retried for both standard and lossy pods. The controller never
-bypasses a PDB by deleting a Pod. The per-reconcile rate cap and retry backoff
-are configurable.
+bypasses a PDB by deleting a Pod. Standard and lossy workloads have separate
+time-based budgets. Each budget has a per-node bucket and a process-wide
+global bucket. An Eviction API call spends one token from each scope. Tokens
+refill over the budget interval and do not reset when Reconcile runs, so a
+faster heartbeat or status update cannot raise throughput. The default
+allowance is one call per minute at each scope. The default burst equals that
+allowance, so a full bucket cannot spend more than one interval of budget.
 
 Duplicate enrollments suppress every row below. While more than one live
 `NodeActivity` targets the Node, Reconcile applies the strongest taint and
@@ -217,7 +222,10 @@ Lossy opt-in relaxes only these standard gates:
 - `emptyDir` volumes (scratch space is discarded on eviction).
 - Explicit node selectors (`spec.nodeSelector`).
 - Required node affinity (`spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution`).
-- The per-reconcile budget is `max(4, MaxPerReconcile)` for lossy pods, separate from the standard cap.
+
+The lossy budget is separate from the standard budget, but it is not a relaxed
+gate. Unset lossy fields use the same per-node count, global count, interval,
+and burst as standard pods. There is no hard-coded minimum of four.
 
 ### Volume and Pod safety contract
 
@@ -245,13 +253,41 @@ PVC eligibility then differs by class, on purpose:
   bound `ReadWriteMany` claim. The lossy opt-in does not make multi-attach
   storage evictable. The skip reason is `pvc-not-allowed`.
 
-Blocked attempts retain a per-node, per-Pod-UID retry deadline. Heartbeat and
-status events continue to reconcile taints, but cannot retry eviction before
-that deadline. Safety gates run again when the deadline expires. Disappeared,
-replaced, or ineligible Pods and inactive node states clear their retry entries;
-expired entries are pruned on subsequent eviction passes. Deadlines are
-process-local: after a restart or leader switch, an eligible Pod may be tried
-immediately, still using the Eviction API and all safety gates.
+Blocked attempts retain a per-node, per-Pod-UID retry deadline. The delay is
+the configured retry backoff, raised when the API status carries a longer
+`Retry-After` hint (`status.details.retryAfterSeconds`, including PDB `429`
+responses), plus a stable jitter in `[0, retryJitter]`. Jitter is capped at
+the retry backoff. It never makes a retry earlier than the backoff or the
+hint. The same Pod UID keeps the same jitter; a replacement UID is a new key
+and does not inherit the previous deadline. Heartbeat and status events
+continue to reconcile taints, but cannot retry eviction before that deadline.
+Safety gates run again when the deadline expires. Disappeared, replaced, or
+ineligible Pods and inactive node states clear their retry entries; expired
+entries are pruned on subsequent eviction passes. A Pod inside its deadline
+does not spend budget. An attempt after the deadline still spends a token, so
+an empty bucket keeps that Pod queued until the budget refills.
+
+Eligible Pods that do not fit in the current per-node and global tokens are
+not attempted. The pass records them as `rate-limited` and requeues for the
+moment both buckets can spend another token. That requeue is sufficient:
+queued candidates are considered again without a heartbeat, Pod watch, or
+other unrelated event. Pods are still evaluated in list order and must pass
+every safety gate on that later pass. Audit mode does not spend tokens.
+
+Per-node means one bucket per node per class. Evicting on node A does not
+spend node B's per-node tokens. Global means one bucket per class for the
+whole process. Node A and node B both spend it, so the process cannot exceed
+the global rate by reconciling many nodes. With the default inheritance, the
+global allowance equals the per-node allowance. Raise the global count when
+more than one node should evict during the same interval. A burst larger than
+the steady count allows that many calls immediately, after which refill
+returns to the steady rate. A burst left at zero inherits the steady count.
+
+Retry deadlines and budget buckets are process-local. After a restart or
+leader switch the new process starts with full bursts and no retry deadlines,
+so an eligible Pod may be tried immediately, still only through the Eviction
+API and all safety gates. Spent budget and pending deadlines are not carried
+across processes. Leadership loss does not write budget state to the API.
 
 Safety gates skip and explain DaemonSet-owned, mirror/static, protected
 namespace, terminating, unmanaged, critical-priority, pinned, `hostPath`, and
@@ -281,8 +317,8 @@ The `Eviction` condition distinguishes the outcomes operators have to act on:
 | inactive policy | `EvictionInactive` | eviction is enabled or auditing, but this node state does not authorize it, enrollment is ambiguous, or the Node does not exist |
 | no eligible pods | `NoEligiblePods` | the policy is active and every Pod was skipped by a safety gate, or no Pods are present. This is not `EvictionDisabled` |
 | blocked | `EvictionBlocked` | a PDB, API error, conflict, missing Pod, or retry backoff stopped an eligible Pod |
-| rate-limited | `EvictionRateLimited` | eligible Pods remain above the per-reconcile cap |
-| completed | `EvictionCompleted` | every attempted eviction was accepted and nothing remains rate-limited |
+| budget waiting | `BudgetWaiting` | eligible Pods remain because the per-node or global token bucket is empty; the reconcile is requeued until budget is available |
+| completed | `EvictionCompleted` | every attempted eviction was accepted and no eligible Pod is waiting for eviction budget |
 
 Workload specs are never mutated.
 

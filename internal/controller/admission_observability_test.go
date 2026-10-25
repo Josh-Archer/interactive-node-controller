@@ -80,11 +80,11 @@ func TestEvictionConditionDistinguishesOutcomes(t *testing.T) {
 		assertEvictionCondition(t, summary, EvictionReasonCompleted, metav1.ConditionTrue)
 	})
 
-	t.Run("rate limited", func(t *testing.T) {
+	t.Run("budget waiting", func(t *testing.T) {
 		r, activity, node, _ := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{eligiblePod("one"), eligiblePod("two")})
 		summary := mustEvict(t, r, activity, node, &node.Spec.Taints[0])
-		assertEvictionCondition(t, summary, EvictionReasonRateLimited, metav1.ConditionTrue)
-		if summary.evicted != 1 || summary.rateLimited != 1 {
+		assertEvictionCondition(t, summary, EvictionReasonBudgetWaiting, metav1.ConditionTrue)
+		if summary.evicted != 1 || summary.deferred != 1 {
 			t.Fatalf("summary = %#v", summary)
 		}
 	})
@@ -580,8 +580,8 @@ func outcomeForReason(reason string) string {
 		return evictionStateNoEligible
 	case EvictionReasonBlocked:
 		return evictionStateBlocked
-	case EvictionReasonRateLimited:
-		return evictionStateRateLimited
+	case EvictionReasonBudgetWaiting:
+		return evictionStateBudgetWaiting
 	case EvictionReasonCompleted:
 		return evictionStateCompleted
 	default:
