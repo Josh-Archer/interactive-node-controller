@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -408,5 +409,62 @@ func TestReconcileBurstTaintKey(t *testing.T) {
 	}
 	if !foundBurst {
 		t.Fatalf("expected burst taint to be applied when interactive")
+	}
+}
+
+func TestTaintPolicyValidateBurstKey(t *testing.T) {
+	unset := testPolicy()
+	if err := unset.Validate(); err != nil {
+		t.Fatalf("unset burst key: %v", err)
+	}
+
+	accepted := []string{
+		"availability.interactive-node.io/burst",
+		"burst",
+		"example.com/My_Name.1",
+		"example.com/" + strings.Repeat("a", 63),
+		strings.Repeat("a", 253) + "/burst",
+	}
+	for _, key := range accepted {
+		policy := testPolicy()
+		policy.BurstTaintKey = key
+		if err := policy.Validate(); err != nil {
+			t.Fatalf("Validate(%q) = %v", key, err)
+		}
+	}
+
+	rejected := []struct {
+		name    string
+		key     string
+		want    string
+		primary string
+	}{
+		{name: "collision", key: testPolicy().Key, want: "collides"},
+		{name: "custom collision", key: "example.com/shared", primary: "example.com/shared", want: "collides"},
+		{name: "whitespace", key: "bad key", want: "whitespace"},
+		{name: "whitespace only", key: " ", want: "whitespace"},
+		{name: "uppercase prefix", key: "Example.com/burst", want: "invalid"},
+		{name: "empty name", key: "example.com/", want: "invalid"},
+		{name: "empty prefix", key: "/burst", want: "invalid"},
+		{name: "extra slash", key: "example.com/team/burst", want: "invalid"},
+		{name: "trailing dash", key: "example.com/burst-", want: "invalid"},
+		{name: "long name", key: "example.com/" + strings.Repeat("a", 64), want: "invalid"},
+		{name: "long prefix", key: strings.Repeat("a", 254) + "/burst", want: "invalid"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := testPolicy()
+			if tc.primary != "" {
+				policy.Key = tc.primary
+			}
+			policy.BurstTaintKey = tc.key
+			err := policy.Validate()
+			if err == nil {
+				t.Fatalf("Validate() accepted %q", tc.key)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error %q, want substring %q", err, tc.want)
+			}
+		})
 	}
 }

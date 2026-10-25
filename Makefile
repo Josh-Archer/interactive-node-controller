@@ -51,6 +51,7 @@ ansible-syntax:
 chart-lint:
 	helm lint chart
 	helm template interactive-node-controller chart >/dev/null
+	./scripts/test-chart-burst-taint.sh
 
 docker-build:
 	docker build -t interactive-node-controller:local .

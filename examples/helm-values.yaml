@@ -12,6 +12,10 @@ taint:
   failClosedValue: unavailable
   staleAfter: 1m
   failClosed: true
+  # Optional. Empty omits --burst-taint-key and keeps single-taint behavior.
+  # Set a qualified name that differs from taint.key, for example
+  # availability.interactive-node.io/burst.
+  burstKey: ''
 
 # Safe opt-in eviction configuration (disabled by default)
 eviction:

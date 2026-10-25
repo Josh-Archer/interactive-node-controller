@@ -1,0 +1,80 @@
+# Disposable runner workload contract.
+#
+# Copy this manifest into the consuming GitOps repository. Choose the
+# namespace and container image there. This repository publishes the example
+# and does not select nodes, pin digests, or deploy runners.
+#
+# Schedulable-label admission
+# The controller sets availability.interactive-node.io/schedulable=true only
+# while the enrolled node is fresh-idle: the heartbeat is younger than
+# staleAfter, state is idle, activity is idle, and the primary taint is
+# absent. The nodeSelector below admits this runner only during that window.
+# After the label is removed, a replacement Pod stays Pending until the node
+# is fresh-idle again.
+#
+# Taint behavior
+# With chart value taint.burstKey set, for example
+# availability.interactive-node.io/burst, the controller applies
+# <burstKey>=<failClosedValue>:NoSchedule while the node is not fresh-idle
+# and removes that taint while the node is fresh-idle. The default
+# fail-closed value is unavailable, so the taint is
+# availability.interactive-node.io/burst=unavailable:NoSchedule.
+# This Pod does not tolerate the burst key, so the scheduler keeps new Pods
+# off the node while the taint is present. The primary key, default
+# availability.interactive-node.io/state, is also absent during fresh-idle.
+# Interactive use applies PreferNoSchedule on the primary key. The burst
+# NoSchedule taint rejects new Pods that do not tolerate it. Leave
+# taint.burstKey empty to keep the controller's single-taint behavior; this
+# nodeSelector still limits admission to fresh-idle nodes.
+#
+# Eviction and lossy opt-in
+# Both Pod labels are explicit. interactive-node-controller.io/evictable=true
+# opts the Pod into eviction. interactive-node-controller.io/allow-lossy-eviction=true
+# opts it into lossy eviction; the same key may be set as an annotation
+# instead of a label. Place the Pod outside the controller's protected
+# namespaces (kube-system, kube-public, and kube-node-lease). The controller
+# calls the policy/v1 Eviction API only after the consumer sets
+# eviction.enabled=true and eviction.audit=false.
+# A Deployment gives the Pod an ownerReference, which eviction requires.
+# With that policy enabled, an opted-in Pod is eligible for lossy eviction
+# while the node is interactively active or the burst NoSchedule taint is
+# present. See docs/controller.md.
+#
+# Lossy contract
+# Loss of scratch data and interrupted work are part of the lossy contract.
+# Eviction stops the container and abandons the in-flight step. The emptyDir
+# volume is deleted with the Pod, so files under /scratch disappear. Record
+# durable results outside the node before the runner reports success.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disposable-runner
+  labels:
+    app.kubernetes.io/name: disposable-runner
+    app.kubernetes.io/part-of: interactive-node-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: disposable-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: disposable-runner
+        interactive-node-controller.io/evictable: "true"
+        interactive-node-controller.io/allow-lossy-eviction: "true"
+    spec:
+      nodeSelector:
+        availability.interactive-node.io/schedulable: "true"
+      containers:
+        - name: runner
+          image: example.invalid/disposable-runner:latest
+          imagePullPolicy: IfNotPresent
+          command: ["disposable-runner"]
+          args: ["--scratch", "/scratch"]
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
+      volumes:
+        - name: scratch
+          emptyDir: {}

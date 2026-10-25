@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -24,10 +25,14 @@ import (
 
 const (
 	TaintAppliedCondition = "TaintApplied"
-	NodeActivityFinalizer = "availability.interactive-node.io/cleanup"
-	SchedulableNodeLabel  = "availability.interactive-node.io/schedulable"
-	HoldAnnotation        = "availability.interactive-node.io/hold"
-	holdStartAnnotation   = "availability.interactive-node.io/hold-start"
+	// InvalidScheduleCondition is True when spec.leadTime or spec.windows cannot
+	// be evaluated. The message names each bad field. Heartbeat and live-activity
+	// protection still reconcile.
+	InvalidScheduleCondition = "InvalidSchedule"
+	NodeActivityFinalizer    = "availability.interactive-node.io/cleanup"
+	SchedulableNodeLabel     = "availability.interactive-node.io/schedulable"
+	HoldAnnotation           = "availability.interactive-node.io/hold"
+	holdStartAnnotation      = "availability.interactive-node.io/hold-start"
 )
 
 // TaintPolicy is deliberately small: one controller instance owns one primary taint
@@ -51,6 +56,18 @@ func (p TaintPolicy) Validate() error {
 	}
 	if p.StaleAfter <= 0 {
 		return fmt.Errorf("stale-after must be positive")
+	}
+	if p.BurstTaintKey == "" {
+		return nil
+	}
+	if strings.ContainsAny(p.BurstTaintKey, " \t\r\n") {
+		return fmt.Errorf("burst taint key %q cannot contain whitespace", p.BurstTaintKey)
+	}
+	if msgs := validation.IsQualifiedName(p.BurstTaintKey); len(msgs) > 0 {
+		return fmt.Errorf("burst taint key %q is invalid: %s", p.BurstTaintKey, strings.Join(msgs, "; "))
+	}
+	if p.BurstTaintKey == p.Key {
+		return fmt.Errorf("burst taint key %q collides with the primary taint key", p.BurstTaintKey)
 	}
 	return nil
 }
@@ -91,8 +108,12 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
+	scheduleErr := validateSchedule(activity.Spec)
 	if strings.TrimSpace(activity.Spec.NodeName) == "" {
-		return ctrl.Result{}, r.setCondition(ctx, activity, metav1.ConditionFalse, "InvalidEnrollment", "spec.nodeName is required", nil)
+		if err := r.setCondition(ctx, activity, metav1.ConditionFalse, "InvalidEnrollment", "spec.nodeName is required", nil); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.setScheduleCondition(ctx, activity, scheduleErr)
 	}
 
 	if !controllerutil.ContainsFinalizer(activity, NodeActivityFinalizer) {
@@ -116,7 +137,13 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
 			clearNodeMetrics(activity.Spec.NodeName)
-			return ctrl.Result{RequeueAfter: requeueAfter}, r.setCondition(ctx, activity, metav1.ConditionFalse, "NodeNotFound", "enrolled node does not exist", desired)
+			if err := r.setCondition(ctx, activity, metav1.ConditionFalse, "NodeNotFound", "enrolled node does not exist", desired); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -152,6 +179,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		conditionStatus, conditionReason = metav1.ConditionFalse, "DuplicateEnrollment"
 	}
 	if err := r.setCondition(ctx, activity, conditionStatus, conditionReason, reason, desired); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if protection.source != nil {
@@ -297,7 +327,11 @@ func (r *NodeActivityReconciler) clock() clock.Clock {
 func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.NodeActivity, now time.Time) (*corev1.Taint, string, time.Duration, bool, time.Time, error) {
 	window, nextWindow, windowWait, windowErr := evaluateWindows(activity.Spec, now)
 	if windowErr != nil {
-		return nil, "", 0, false, time.Time{}, windowErr
+		// Invalid windows are surfaced as InvalidSchedule. Ignore them for
+		// scheduling, but do not skip live activity or heartbeat protection.
+		window = nil
+		nextWindow = time.Time{}
+		windowWait = 0
 	}
 	stale := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
 	if stale {
@@ -322,6 +356,12 @@ func (r *NodeActivityReconciler) desiredTaint(activity *availabilityv1alpha1.Nod
 			default:
 				return nil, "scheduled idle-allowed window", minPositive(remaining, windowWait), true, nextWindow, nil
 			}
+		}
+		if windowErr != nil {
+			// A fresh idle heartbeat must not stay admitted when the schedule
+			// cannot prove that no protected window is open.
+			t, m, d := r.failClosed("availability schedule is invalid")
+			return t, m, minPositive(d, windowWait), false, nextWindow, nil
 		}
 		return nil, "host is idle; managed taint removed", minPositive(remaining, windowWait), false, nextWindow, nil
 	case availabilityv1alpha1.StateActive:
@@ -465,6 +505,32 @@ func reconcileSchedulableLabel(node *corev1.Node, schedulable bool) bool {
 		}
 	}
 	return false
+}
+
+func (r *NodeActivityReconciler) setScheduleCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, scheduleErr error) error {
+	existing := meta.FindStatusCondition(activity.Status.Conditions, InvalidScheduleCondition)
+	if scheduleErr == nil && (existing == nil || existing.Status == metav1.ConditionFalse) {
+		return nil
+	}
+	before := activity.DeepCopy()
+	condition := metav1.Condition{
+		Type:               InvalidScheduleCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ScheduleValid",
+		Message:            "availability schedule is valid",
+		ObservedGeneration: activity.Generation,
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	}
+	if scheduleErr != nil {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "InvalidSchedule"
+		condition.Message = scheduleErr.Error() + "; scheduled windows were not applied; live activity and heartbeat protection still apply"
+	}
+	meta.SetStatusCondition(&activity.Status.Conditions, condition)
+	if reflect.DeepEqual(before.Status, activity.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, activity, client.MergeFrom(before))
 }
 
 func (r *NodeActivityReconciler) setCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, status metav1.ConditionStatus, reason, message string, taint *corev1.Taint) error {
