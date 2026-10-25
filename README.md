@@ -127,7 +127,9 @@ schedulable-label admission, burst-taint behavior, and the lossy opt-in. Loss
 of scratch data and interrupted work are part of that contract. Place the
 runner manifest in the consuming GitOps repository.
 The policy/v1 Eviction API is used so PDBs and grace periods are respected; PDB
-blocks are reported and retried. See [controller operations](docs/controller.md).
+blocks are reported and retried. Throughput is limited by time-based standard
+and lossy budgets (one per-node bucket and one process-global bucket each),
+not by how often Reconcile runs. See [controller operations](docs/controller.md).
 Install with the Helm chart only through a consumer-owned, version/digest-pinned
 GitOps revision; see [controller operations](docs/controller.md).
 

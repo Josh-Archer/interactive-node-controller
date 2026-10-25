@@ -44,8 +44,10 @@ does not evict Pods; that safety boundary remains Phase 3.
   non-empty node-selector, pinned/required-affinity, local-storage, and
   PVC-backed RWO-sensitive Pods are skipped with reasoned metrics and status
   evidence.
-- Evictions have a configurable per-reconcile cap and retry backoff. The
-  controller has no workload-spec mutation or Pod-delete permission.
+- Evictions use separate time-based standard and lossy budgets, each with a
+  per-node bucket and a process-global bucket, plus a bounded burst and
+  per-Pod-UID retry backoff. The controller has no workload-spec mutation or
+  Pod-delete permission.
 - Unit/fake-client tests cover each gate, audit mode, PDB blocks, retries,
   rate limiting, and unchanged unrelated workload objects. No live consumer
   cluster is mutated in Phase 3.

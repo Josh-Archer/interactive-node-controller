@@ -73,6 +73,27 @@ eviction:
     - kube-system
     - kube-public
     - kube-node-lease
+  # Default per-node steady budget and burst for both classes, applied once
+  # per budgetInterval. It is not reset on every reconcile. Class fields below
+  # override it when set to a positive value. Zero class fields inherit this
+  # count; global and burst then inherit that per-node count, so one process
+  # stays within a single node's rate until the global budget is raised.
   maxPerReconcile: 1
+  budgetInterval: 1m
   retryBackoff: 30s
+  # Stable per-Pod-UID jitter added on top of retryBackoff or a longer API
+  # Retry-After hint. The controller caps it at retryBackoff.
+  retryJitter: 5s
+  standard:
+    perNode: 0
+    global: 0
+    interval: 0s
+    burstPerNode: 0
+    burstGlobal: 0
+  lossy:
+    perNode: 0
+    global: 0
+    interval: 0s
+    burstPerNode: 0
+    burstGlobal: 0
   evictableLabel: interactive-node-controller.io/evictable

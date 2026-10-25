@@ -25,8 +25,25 @@ eviction:
     - kube-system
     - kube-public
     - kube-node-lease
+  # Per-node steady budget per budgetInterval for both classes. Not a
+  # per-reconcile cap. Zero class budgets inherit this value; global and burst
+  # then inherit the per-node allowance.
   maxPerReconcile: 1
+  budgetInterval: 1m
   retryBackoff: 30s
+  retryJitter: 5s
+  standard:
+    perNode: 0
+    global: 0
+    interval: 0s
+    burstPerNode: 0
+    burstGlobal: 0
+  lossy:
+    perNode: 0
+    global: 0
+    interval: 0s
+    burstPerNode: 0
+    burstGlobal: 0
   evictableLabel: interactive-node-controller.io/evictable
 
 resources:
