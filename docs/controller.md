@@ -48,10 +48,12 @@ duration when first observed, applies the interactive taint while it is valid,
 and removes the annotation when it expires. Metrics `inc_window_active` and
 `inc_next_window_start_timestamp_seconds` report window state and the next start.
 
-Keep exactly one live `NodeActivity` enrollment per Node. If multiple objects
-across any namespaces target the same Node, the controller conservatively
-aggregates their contributions: fresh active-game `NoSchedule` wins, followed
-by fail-closed `NoSchedule`, interactive `PreferNoSchedule`, and idle/no taint.
+Keep exactly one live `NodeActivity` enrollment per Node. Aggregation, sibling
+refresh, and Node drift mapping read a `spec.nodeName` field index, so that
+work follows the enrollments for the Node. If multiple objects across any
+namespaces target the same Node, the controller conservatively aggregates
+their contributions: fresh active-game `NoSchedule` wins, followed by
+fail-closed `NoSchedule`, interactive `PreferNoSchedule`, and idle/no taint.
 Unknown/stale reports contribute the configured fail-closed policy. Equal
 contributions are ordered by namespace/name for deterministic per-node metrics.
 The earliest contribution deadline schedules reevaluation. Every duplicate

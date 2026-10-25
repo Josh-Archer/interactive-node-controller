@@ -207,7 +207,7 @@ func TestReconcileExportsMetricsAndCleansUp(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
 
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 
 	// 1. Initial reconcile: should export active game metrics
@@ -300,7 +300,7 @@ func TestReconcileNodeNotFoundClearsMetrics(t *testing.T) {
 	_ = availabilityv1alpha1.AddToScheme(scheme)
 
 	// Node is intentionally NOT added to objects
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {

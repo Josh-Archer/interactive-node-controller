@@ -11,8 +11,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -52,10 +54,59 @@ func TestScheduledWindowEnvtest(t *testing.T) {
 	if err := api.Create(context.Background(), node); err != nil {
 		t.Fatal(err)
 	}
+	// Reconcile reads NodeActivity through the spec.nodeName index. Nodes stay on
+	// the direct client so taint writes remain visible to the next reconcile.
+	cacheCtx, stopCache := context.WithCancel(context.Background())
+	reader, err := cache.New(config, cache.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetupNodeActivityNodeNameIndexer(cacheCtx, reader); err != nil {
+		t.Fatal(err)
+	}
+	cacheDone := make(chan error, 1)
+	go func() { cacheDone <- reader.Start(cacheCtx) }()
+	t.Cleanup(func() {
+		stopCache()
+		select {
+		case err := <-cacheDone:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("enrollment cache did not stop")
+		}
+	})
+	if !reader.WaitForCacheSync(cacheCtx) {
+		t.Fatal("enrollment cache failed to sync")
+	}
+	cached, err := client.New(config, client.Options{
+		Scheme: scheme,
+		Cache: &client.CacheOptions{
+			Reader:     reader,
+			DisableFor: []client.Object{&corev1.Node{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	policy := testPolicy()
 	policy.StaleAfter = 8 * time.Hour
-	reconciler := &NodeActivityReconciler{Client: api, Clock: clock, Policy: policy}
+	reconciler := &NodeActivityReconciler{Client: cached, Clock: clock, Policy: policy}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: activity.Namespace, Name: activity.Name}}
+	waitForStatus := func(state availabilityv1alpha1.State, activityType availabilityv1alpha1.Activity, heartbeat time.Time) {
+		t.Helper()
+		err := wait.PollUntilContextTimeout(cacheCtx, 10*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+			current := &availabilityv1alpha1.NodeActivity{}
+			if err := cached.Get(ctx, request.NamespacedName, current); err != nil {
+				return false, nil
+			}
+			return current.Status.State == state && current.Status.Activity == activityType && current.Status.HeartbeatAt.Equal(heartbeat), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	reconcile := func() *corev1.Node {
 		t.Helper()
 		current := &availabilityv1alpha1.NodeActivity{}
@@ -66,6 +117,7 @@ func TestScheduledWindowEnvtest(t *testing.T) {
 		if err := api.Status().Update(context.Background(), current); err != nil {
 			t.Fatal(err)
 		}
+		waitForStatus(current.Status.State, current.Status.Activity, current.Status.HeartbeatAt)
 		if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 			t.Fatal(err)
 		}
@@ -96,6 +148,7 @@ func TestScheduledWindowEnvtest(t *testing.T) {
 	if err := api.Status().Update(context.Background(), current); err != nil {
 		t.Fatal(err)
 	}
+	waitForStatus(current.Status.State, current.Status.Activity, current.Status.HeartbeatAt)
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}

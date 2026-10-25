@@ -34,7 +34,7 @@ func TestReconcileOwnsOnlyConfiguredTaint(t *testing.T) {
 	if err := availabilityv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestReconcileIdleRemovesOnlyOwnedTaint(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestReconcileStaleHeartbeatFailsClosed(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestReconcileUnsupportedActiveActivityFailsClosed(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestReconcileAddsFinalizer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestReconcileDeleteRemovesOwnedTaintAndFinalizer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestReconcileDeleteNodeNotFoundRemovesFinalizer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestReconcileDeleteEmptyNodeNameRemovesFinalizer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestReconcileDeleteNodeWithoutOwnedTaintRemovesFinalizer(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: activity.Name, Namespace: activity.Namespace}}); err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestReconcileSchedulableNodeLabel(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: testPolicy()}
 
 	// Idle -> node gets SchedulableNodeLabel="true"
@@ -365,7 +365,7 @@ func TestReconcileBurstTaintKey(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	client := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: client, Clock: clocktesting.NewFakeClock(now), Policy: policy}
 
 	// Idle -> burst taint absent

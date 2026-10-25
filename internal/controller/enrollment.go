@@ -23,11 +23,13 @@ type enrollmentProtection struct {
 	nextWindow   time.Time
 }
 
-// Aggregate every live enrollment across namespaces. Ordering makes equal
-// contributions deterministic without process-local ownership or winner state.
+// Aggregate every live enrollment for this Node across namespaces. The
+// spec.nodeName index keeps the lookup proportional to matching enrollments.
+// Ordering makes equal contributions deterministic without process-local
+// ownership or winner state.
 func (r *NodeActivityReconciler) protectionForNode(ctx context.Context, nodeName string, now time.Time) (enrollmentProtection, error) {
 	var enrollments availabilityv1alpha1.NodeActivityList
-	if err := r.List(ctx, &enrollments); err != nil {
+	if err := r.List(ctx, &enrollments, client.MatchingFields{NodeActivityNodeNameKey: nodeName}); err != nil {
 		return enrollmentProtection{}, err
 	}
 	sort.Slice(enrollments.Items, func(i, j int) bool {
@@ -81,7 +83,7 @@ func (r *NodeActivityReconciler) requestsForNode(ctx context.Context, object cli
 		return nil
 	}
 	var enrollments availabilityv1alpha1.NodeActivityList
-	if err := r.List(ctx, &enrollments); err != nil {
+	if err := r.List(ctx, &enrollments, client.MatchingFields{NodeActivityNodeNameKey: activity.Spec.NodeName}); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "list sibling NodeActivity enrollments")
 		return nil
 	}

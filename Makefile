@@ -28,7 +28,7 @@ test:
 
 # Starts only the local envtest API server; it never reads the active kubeconfig.
 test-api:
-	XDG_CACHE_HOME=/tmp/interactive-node-controller-envtest KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20250517180713-32e5e9e948a5 use -p path 1.32.0)" go test ./internal/controller -run 'Test(EnrollmentAPIIntegration|EvictionAPIPreconditions|ScheduledWindowEnvtest)$$' -count=1 -v
+	XDG_CACHE_HOME=/tmp/interactive-node-controller-envtest KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20250517180713-32e5e9e948a5 use -p path 1.32.0)" go test ./internal/controller -run 'Test(EnrollmentAPIIntegration|EvictionAPIPreconditions|ScheduledWindowEnvtest|NodeActivityNodeNameIndexEnvtest)$$' -count=1 -v
 
 # Requires KUBECONFIG to point at a disposable Kind cluster (kind-* context).
 test-kind:
