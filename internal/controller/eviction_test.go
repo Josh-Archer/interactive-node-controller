@@ -239,6 +239,9 @@ func TestEvictionAllowsLossyPodsWithEmptyDirAndAffinity(t *testing.T) {
 	runner2.UID = types.UID("runner-2-uid")
 
 	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, []*corev1.Pod{runner1, runner2})
+	// The test is the emptyDir and affinity gate. Raise the lossy burst so the
+	// time budget is not what rejects the second Pod.
+	r.Eviction.LossyBudget = EvictionBudget{PerNode: 2, Global: 2, BurstPerNode: 2, BurstGlobal: 2}
 	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
 	if err != nil {
 		t.Fatal(err)
@@ -415,13 +418,38 @@ func TestEvictionDecoupledLossyBurstBudget(t *testing.T) {
 
 	allPods := append([]*corev1.Pod{normalPod}, runners...)
 	r, activity, node, evictor := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, allPods)
-	// policy.MaxPerReconcile is 1 (normal pods cap at 1, lossy pods cap at 4)
+	// Default budgets match MaxPerReconcile (1) for both classes. Lossy pods
+	// do not receive a hard-coded minimum of four.
 	summary, err := r.reconcileEvictions(context.Background(), activity, node, &node.Spec.Taints[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.evicted != 5 || len(evictor.names) != 5 {
-		t.Fatalf("expected 5 evictions (1 normal + 4 lossy) in single pass with MaxPerReconcile=1, got summary=%#v evictions=%#v", summary, evictor.names)
+	if summary.evicted != 2 || len(evictor.names) != 2 || summary.deferred != 3 {
+		t.Fatalf("expected 1 standard + 1 lossy eviction and 3 deferred, got summary=%#v evictions=%#v", summary, evictor.names)
+	}
+	lossySeen, standardSeen := 0, 0
+	for _, name := range evictor.names {
+		if name.Name == normalPod.Name {
+			standardSeen++
+			continue
+		}
+		lossySeen++
+	}
+	if standardSeen != 1 || lossySeen != 1 {
+		t.Fatalf("classes shared a budget: %#v", evictor.names)
+	}
+
+	r.Eviction.LossyBudget = EvictionBudget{PerNode: 4, Global: 4, BurstPerNode: 4, BurstGlobal: 4}
+	// The default bucket was already created with burst 1. A fresh reconciler
+	// picks up the wider lossy burst.
+	r2, activity2, node2, evictor2 := evictionFixture(t, availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, corev1.TaintEffectNoSchedule, allPods)
+	r2.Eviction.LossyBudget = r.Eviction.LossyBudget
+	summary, err = r2.reconcileEvictions(context.Background(), activity2, node2, &node2.Spec.Taints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.evicted != 5 || len(evictor2.names) != 5 || summary.deferred != 0 {
+		t.Fatalf("expected configured lossy burst of 4 plus 1 standard, got summary=%#v evictions=%#v", summary, evictor2.names)
 	}
 }
 

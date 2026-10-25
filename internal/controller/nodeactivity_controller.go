@@ -81,6 +81,8 @@ type NodeActivityReconciler struct {
 	Evictor  EvictionClient
 	Clock    clock.Clock
 	retries  evictionRetries
+	// budgets are process-local. A restart or leader switch starts them full.
+	budgets evictionBudgets
 	// controllerName overrides the generated controller name when several
 	// managers are started in one process.
 	controllerName string

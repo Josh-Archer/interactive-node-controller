@@ -16,6 +16,12 @@ grep -q 'verbs: \[create\]' chart/templates/rbac.yaml
 
 grep -q 'eviction-enabled' chart/templates/deployment.yaml
 grep -q 'eviction-audit' chart/templates/deployment.yaml
+grep -q 'eviction-budget-interval' chart/templates/deployment.yaml
+grep -q 'eviction-retry-jitter' chart/templates/deployment.yaml
+grep -q 'eviction-standard-per-node' chart/templates/deployment.yaml
+grep -q 'eviction-standard-global' chart/templates/deployment.yaml
+grep -q 'eviction-lossy-per-node' chart/templates/deployment.yaml
+grep -q 'eviction-lossy-global' chart/templates/deployment.yaml
 grep -q 'enabled: false' chart/values.yaml
 grep -q 'audit: true' chart/values.yaml
 grep -q 'interactive-node-controller.io/evictable' internal/controller/eviction.go
