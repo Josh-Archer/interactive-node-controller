@@ -369,3 +369,7 @@ Deploy the controller via ArgoCD using the published OCI Helm chart:
         kubectl taint nodes homelabdesktop availability.interactive-node.io/state-
         ```
         (general form: `kubectl taint nodes <node> <key>-`).
+
+## Desktop recovery measurement
+
+Deployment readiness and eviction acceptance are not resource recovery. A repeatable Kind measurement records user-activity detection, admission closure, eviction acceptance, and CPU/memory release separately, and a canary runbook lists the live `homelabdesktop` evidence that is still required. See [desktop recovery canary](desktop-recovery-canary.md). When a burst taint key is configured, rollback also clears that key; the runbook has the command.

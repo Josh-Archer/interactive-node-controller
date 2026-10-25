@@ -41,6 +41,27 @@ jobs:
           kind export kubeconfig --name inc37 --kubeconfig "$RUNNER_TEMP/inc37-kubeconfig"
           export KUBECONFIG="$RUNNER_TEMP/inc37-kubeconfig"
           make test-kind
+  recovery-kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install pinned Kind
+        run: go install sigs.k8s.io/kind@v0.27.0
+      - name: Measure desktop recovery on a disposable Kind cluster
+        run: ./scripts/measure-desktop-recovery.sh
+      - name: Upload desktop recovery report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-recovery-report
+          path: desktop-recovery-report.json
+          if-no-files-found: ignore
+          retention-days: 7
   quality:
     runs-on: ubuntu-latest
     steps:

@@ -60,6 +60,10 @@ does not evict Pods; that safety boundary remains Phase 3.
 - Rollback and stale-agent recovery procedures are documented and tested.
 - No direct kubectl-only deployment path is introduced.
 
+## Desktop recovery measurement
+
+Follow-up to the Phase 4 home canary ([#5](https://github.com/Josh-Archer/interactive-node-controller/issues/5)) and the API and Kind tests ([#37](https://github.com/Josh-Archer/interactive-node-controller/issues/37)): [#62](https://github.com/Josh-Archer/interactive-node-controller/issues/62) measures user-activity detection, admission closure, eviction acceptance, and CPU/memory release as separate samples. `make test-recovery` runs that matrix on a disposable Kind cluster. Eviction acceptance is not the live `homelabdesktop` claim. The procedure, budget, rollback, and the live steps that remain are in [desktop-recovery-canary.md](desktop-recovery-canary.md).
+
 ## Phase 5 acceptance criteria
 
 Tracked in [#18](https://github.com/Josh-Archer/interactive-node-controller/issues/18) and [discussion #19](https://github.com/Josh-Archer/interactive-node-controller/discussions/19).

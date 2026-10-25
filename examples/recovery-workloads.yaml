@@ -1,0 +1,190 @@
+# Disposable and protected workloads for the desktop recovery canary.
+#
+# Copy this file into the consuming GitOps repository. Do not apply it from
+# this repository. The namespace must not be kube-system, kube-public, or
+# kube-node-lease. Sizes are requests. None of these Pods request a GPU;
+# a live GPU sample is a separate opted-in disposable workload.
+#
+# The Kind harness adds control-plane and desktop-recovery.example/unrelated
+# tolerations so the Pods can schedule on a Kind node. Those tolerations are
+# not opt-in and are not part of this consumer manifest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lossy-runner
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: lossy-runner
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lossy-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lossy-runner
+        app.kubernetes.io/part-of: desktop-recovery-canary
+        interactive-node-controller.io/evictable: "true"
+        interactive-node-controller.io/allow-lossy-eviction: "true"
+    spec:
+      terminationGracePeriodSeconds: 3
+      nodeSelector:
+        availability.interactive-node.io/schedulable: "true"
+      containers:
+        - name: runner
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: standard-runner
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: standard-runner
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: standard-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: standard-runner
+        app.kubernetes.io/part-of: desktop-recovery-canary
+        interactive-node-controller.io/evictable: "true"
+    spec:
+      terminationGracePeriodSeconds: 3
+      containers:
+        - name: runner
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protected-neighbor
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: protected-neighbor
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: protected-neighbor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: protected-neighbor
+        app.kubernetes.io/part-of: desktop-recovery-canary
+    spec:
+      containers:
+        - name: runner
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pinned-neighbor
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: pinned-neighbor
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pinned-neighbor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pinned-neighbor
+        app.kubernetes.io/part-of: desktop-recovery-canary
+        interactive-node-controller.io/evictable: "true"
+      annotations:
+        interactive-node-controller.io/pinned: "true"
+    spec:
+      containers:
+        - name: runner
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 20m
+              memory: 16Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pdb-runner
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: pdb-runner
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pdb-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pdb-runner
+        app.kubernetes.io/part-of: desktop-recovery-canary
+        interactive-node-controller.io/evictable: "true"
+        interactive-node-controller.io/allow-lossy-eviction: "true"
+    spec:
+      terminationGracePeriodSeconds: 3
+      nodeSelector:
+        availability.interactive-node.io/schedulable: "true"
+      containers:
+        - name: runner
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests:
+              cpu: 80m
+              memory: 48Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pdb-runner
+  namespace: desktop-recovery-canary
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pdb-runner
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: admission-probe
+  namespace: desktop-recovery-canary
+  labels:
+    app.kubernetes.io/name: admission-probe
+    app.kubernetes.io/part-of: desktop-recovery-canary
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    availability.interactive-node.io/schedulable: "true"
+  containers:
+    - name: probe
+      image: registry.k8s.io/pause:3.10
+      resources:
+        requests:
+          cpu: 10m
+          memory: 8Mi

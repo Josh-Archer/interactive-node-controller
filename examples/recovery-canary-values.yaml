@@ -1,0 +1,26 @@
+# Canary Helm values for a consumer GitOps repository.
+#
+# This repository does not install these values. Copy them into the home
+# repository and replace image.digest with the reviewed release digest.
+# Chart defaults stay eviction disabled and audit-only; this file is the
+# explicit canary opt-in.
+#
+# taint.burstKey closes admission during interactive and scheduled lead time.
+# Without it, PreferNoSchedule does not keep new Pods off the desktop.
+# staleAfter stays at the chart default of 1m. Do not shorten it to meet the
+# recovery budget. The Kind harness uses a shorter staleAfter only inside its
+# disposable cluster and records that difference.
+image:
+  repository: ghcr.io/josh-archer/interactive-node-controller
+  digest: sha256:40b00ee4215d468c019ebc41d944c630baaf39ffe7364353274d5a44dafa22b5
+
+taint:
+  burstKey: availability.interactive-node.io/burst
+  staleAfter: 1m
+  failClosed: true
+
+eviction:
+  enabled: true
+  audit: false
+  maxPerReconcile: 4
+  retryBackoff: 30s
