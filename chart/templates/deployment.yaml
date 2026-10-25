@@ -38,6 +38,7 @@ spec:
             - --fail-closed-taint-value={{ .Values.taint.failClosedValue }}
             - --stale-after={{ .Values.taint.staleAfter }}
             - --fail-closed={{ .Values.taint.failClosed }}
+            {{- include "interactive-node-controller.burstTaintArg" . }}
             - --eviction-enabled={{ .Values.eviction.enabled }}
             - --eviction-audit={{ .Values.eviction.audit }}
             - --eviction-protected-namespaces={{ join "," .Values.eviction.protectedNamespaces }}

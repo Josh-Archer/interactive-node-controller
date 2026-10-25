@@ -57,6 +57,12 @@ taint:
   failClosedValue: unavailable
   staleAfter: 1m
   failClosed: true
+  # Optional secondary key passed as --burst-taint-key. Leave this empty to
+  # omit the flag and keep single-taint behavior. When set, the controller
+  # applies <burstKey>=<failClosedValue>:NoSchedule while the node is not
+  # fresh-idle and removes it while the node is fresh-idle. The value must be
+  # a Kubernetes qualified name and must differ from taint.key.
+  burstKey: ''
 
 eviction:
   # Safe default: no Eviction API calls are made until both enabled is true
