@@ -20,40 +20,91 @@ type scheduledWindow struct {
 	end   time.Time
 }
 
-// evaluateWindows returns the strongest open window, including one whose lead
-// time has begun, the next window start, and the wait until the earliest
-// lead-time, start, or end boundary. The wait does not depend on a later
-// reporter event.
-func evaluateWindows(spec availabilityv1alpha1.NodeActivitySpec, now time.Time) (*scheduledWindow, time.Time, time.Duration, error) {
-	lead, err := parseLeadTime(spec.LeadTime)
-	if err != nil {
-		return nil, time.Time{}, 0, err
+type parsedWindow struct {
+	expr     string
+	label    string
+	state    string
+	schedule cron.Schedule
+	duration time.Duration
+	loc      *time.Location
+}
+
+// validateSchedule reports every leadTime and window field that cannot be
+// evaluated. An empty schedule is valid. Callers must not apply windows when
+// this returns an error.
+func validateSchedule(spec availabilityv1alpha1.NodeActivitySpec) error {
+	_, _, err := parseSchedule(spec)
+	return err
+}
+
+// parseSchedule validates spec.leadTime and every window, then returns the
+// compiled schedule only when every field is valid.
+func parseSchedule(spec availabilityv1alpha1.NodeActivitySpec) (time.Duration, []parsedWindow, error) {
+	var problems []string
+	var lead time.Duration
+	if spec.LeadTime != "" {
+		parsed, err := time.ParseDuration(spec.LeadTime)
+		if err != nil || parsed < 0 {
+			problems = append(problems, fmt.Sprintf("spec.leadTime %q must be a non-negative duration", spec.LeadTime))
+		} else {
+			lead = parsed
+		}
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	var active *scheduledWindow
-	var next time.Time
-	var wake time.Time
-	for _, w := range spec.Windows {
+	windows := make([]parsedWindow, 0, len(spec.Windows))
+	for i, w := range spec.Windows {
+		valid := true
 		schedule, err := parser.Parse(w.Schedule)
 		if err != nil {
-			return nil, time.Time{}, 0, fmt.Errorf("invalid window schedule %q: %w", w.Schedule, err)
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].schedule %q is not a valid five-field cron expression: %v", i, w.Schedule, err))
 		}
 		duration, err := time.ParseDuration(w.Duration)
 		if err != nil || duration <= 0 {
-			return nil, time.Time{}, 0, fmt.Errorf("window duration must be positive")
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].duration %q must be a positive duration", i, w.Duration))
 		}
-		if w.State != "game" && w.State != "interactive" && w.State != "idle-allowed" {
-			return nil, time.Time{}, 0, fmt.Errorf("window state must be game, interactive, or idle-allowed")
+		switch w.State {
+		case "game", "interactive", "idle-allowed":
+		default:
+			valid = false
+			problems = append(problems, fmt.Sprintf("spec.windows[%d].state %q must be game, interactive, or idle-allowed", i, w.State))
 		}
 		loc := time.UTC
 		if w.TimeZone != "" {
-			var locErr error
-			loc, locErr = time.LoadLocation(w.TimeZone)
+			loaded, locErr := time.LoadLocation(w.TimeZone)
 			if locErr != nil {
-				return nil, time.Time{}, 0, fmt.Errorf("invalid window timeZone %q: %w", w.TimeZone, locErr)
+				valid = false
+				problems = append(problems, fmt.Sprintf("spec.windows[%d].timeZone %q is not a valid IANA time zone: %v", i, w.TimeZone, locErr))
+			} else {
+				loc = loaded
 			}
 		}
-		opened, upcoming, boundary, scanErr := scanWindow(w.Schedule, w.Duration, w.State, schedule, now.In(loc), duration, lead)
+		if valid {
+			windows = append(windows, parsedWindow{expr: w.Schedule, label: w.Duration, state: w.State, schedule: schedule, duration: duration, loc: loc})
+		}
+	}
+	if len(problems) > 0 {
+		return 0, nil, fmt.Errorf("%s", strings.Join(problems, "; "))
+	}
+	return lead, windows, nil
+}
+
+// evaluateWindows returns the strongest open window, including one whose lead
+// time has begun, the next window start, and the wait until the earliest
+// lead-time, start, or end boundary. The schedule is validated by
+// parseSchedule first: an invalid leadTime, cron expression, duration, state,
+// or time zone returns an error and no window.
+func evaluateWindows(spec availabilityv1alpha1.NodeActivitySpec, now time.Time) (*scheduledWindow, time.Time, time.Duration, error) {
+	lead, windows, err := parseSchedule(spec)
+	if err != nil {
+		return nil, time.Time{}, 0, err
+	}
+	var active *scheduledWindow
+	var next time.Time
+	var wake time.Time
+	for _, w := range windows {
+		opened, upcoming, boundary, scanErr := scanWindow(w.expr, w.label, w.state, w.schedule, now.In(w.loc), w.duration, lead)
 		if scanErr != nil {
 			return nil, time.Time{}, 0, scanErr
 		}
@@ -131,17 +182,6 @@ func nextActivation(expr string, schedule cron.Schedule, after time.Time) (time.
 		return time.Time{}, fmt.Errorf("window schedule %q did not advance past %s", expr, after.Format(time.RFC3339Nano))
 	}
 	return next, nil
-}
-
-func parseLeadTime(value string) (time.Duration, error) {
-	if value == "" {
-		return 0, nil
-	}
-	lead, err := time.ParseDuration(value)
-	if err != nil || lead < 0 {
-		return 0, fmt.Errorf("spec.leadTime must be a non-negative duration")
-	}
-	return lead, nil
 }
 
 func earlierTime(current, candidate time.Time) time.Time {

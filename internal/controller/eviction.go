@@ -132,6 +132,62 @@ func (s evictionSummary) condition(now time.Time, generation int64) metav1.Condi
 	return metav1.Condition{Type: EvictionCondition, Status: status, Reason: reason, Message: message, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)}
 }
 
+// evictionClass is the safety contract for one live enrollment. Duplicate
+// enrollments never reach it: Reconcile skips eviction when more than one
+// NodeActivity targets the Node. docs/controller.md is the same matrix.
+type evictionClass int
+
+const (
+	evictionClassNone evictionClass = iota
+	evictionClassGame
+	evictionClassLossyOnly
+)
+
+func (r *NodeActivityReconciler) evictionClass(activity *availabilityv1alpha1.NodeActivity, node *corev1.Node, desired *corev1.Taint, now time.Time) evictionClass {
+	staleHeartbeat := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
+	fresh := !staleHeartbeat
+
+	// Fresh unknown is a startup or debounce report. Fail-closed and burst
+	// NoSchedule fences still apply, and neither fence authorizes eviction.
+	if fresh && activity.Status.State == availabilityv1alpha1.StateUnknown {
+		return evictionClassNone
+	}
+	// Fresh idle with no desired taint is standing down, including a scheduled
+	// idle-allowed window. A leftover burst fence is not an eviction signal.
+	if fresh && desired == nil &&
+		activity.Status.State == availabilityv1alpha1.StateIdle &&
+		activity.Status.Activity == availabilityv1alpha1.ActivityIdle {
+		return evictionClassNone
+	}
+
+	// An expired heartbeat is the stale row, even if the last report was an
+	// active game and the active NoSchedule taint has not been replaced yet.
+	if fresh &&
+		activity.Status.State == availabilityv1alpha1.StateActive &&
+		activity.Status.Activity == availabilityv1alpha1.ActivityGame &&
+		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule && desired.Value == r.Policy.ActiveValue &&
+		hasTaint(node, r.Policy.Key, r.Policy.ActiveValue, corev1.TaintEffectNoSchedule) {
+		return evictionClassGame
+	}
+
+	if (staleHeartbeat || activity.Status.State == availabilityv1alpha1.StateStale) &&
+		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule &&
+		hasTaint(node, r.Policy.Key, desired.Value, corev1.TaintEffectNoSchedule) {
+		return evictionClassLossyOnly
+	}
+
+	// Burst NoSchedule is a scheduling fence on every node that is not fresh
+	// idle. It authorizes lossy eviction only after the fresh-unknown and
+	// fresh-idle stand-down cases above have been excluded.
+	if (activity.Status.State == availabilityv1alpha1.StateActive && activity.Status.Activity != availabilityv1alpha1.ActivityGame) ||
+		activity.Status.Activity == availabilityv1alpha1.ActivityInteractive ||
+		hasTaint(node, r.Policy.Key, r.Policy.InteractiveValue, corev1.TaintEffectPreferNoSchedule) ||
+		(r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule)) {
+		return evictionClassLossyOnly
+	}
+	return evictionClassNone
+}
+
 func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, node *corev1.Node, desired *corev1.Taint) (evictionSummary, error) {
 	policy := r.Eviction.normalized()
 	summary := evictionSummary{}
@@ -140,23 +196,8 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
-	isGameNoSchedule := activity.Status.State == availabilityv1alpha1.StateActive &&
-		activity.Status.Activity == availabilityv1alpha1.ActivityGame &&
-		hasTaint(node, r.Policy.Key, r.Policy.ActiveValue, corev1.TaintEffectNoSchedule) &&
-		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule && desired.Value == r.Policy.ActiveValue
-
-	isStaleHeartbeat := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
-	isReporterStale := activity.Status.State == availabilityv1alpha1.StateStale
-	isProtectiveLossy := (isStaleHeartbeat || isReporterStale) &&
-		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule &&
-		hasTaint(node, r.Policy.Key, desired.Value, corev1.TaintEffectNoSchedule)
-
-	isInteractiveLossy := (activity.Status.State == availabilityv1alpha1.StateActive && activity.Status.Activity != availabilityv1alpha1.ActivityGame) ||
-		activity.Status.Activity == availabilityv1alpha1.ActivityInteractive ||
-		hasTaint(node, r.Policy.Key, r.Policy.InteractiveValue, corev1.TaintEffectPreferNoSchedule) ||
-		(r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule))
-
-	if !isGameNoSchedule && !isProtectiveLossy && !isInteractiveLossy {
+	class := r.evictionClass(activity, node, desired, now)
+	if class == evictionClassNone {
 		r.retries.prune(now, node.Name, nil)
 		return summary, nil
 	}
@@ -173,7 +214,13 @@ func (r *NodeActivityReconciler) reconcileEvictions(ctx context.Context, activit
 			continue
 		}
 		allowLossy := isLossyEvictionAllowed(pod)
-		if !isGameNoSchedule && (!allowLossy || (!isProtectiveLossy && !isInteractiveLossy)) {
+		switch class {
+		case evictionClassGame:
+		case evictionClassLossyOnly:
+			if !allowLossy {
+				continue
+			}
+		default:
 			continue
 		}
 		decision, reason := r.evictionDecision(ctx, pod, node.Name, policy)
@@ -330,6 +377,11 @@ func (r *NodeActivityReconciler) evictionDecision(ctx context.Context, pod *core
 		}
 		if pv.Spec.Local != nil || pv.Spec.HostPath != nil {
 			return false, "local-pv"
+		}
+		// Bound ReadWriteMany and ReadOnlyMany stay eligible for standard pods.
+		// Lossy opt-in does not extend to any PersistentVolumeClaim.
+		if allowLossy {
+			return false, "pvc-not-allowed"
 		}
 	}
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {

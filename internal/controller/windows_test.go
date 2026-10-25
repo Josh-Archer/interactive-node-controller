@@ -171,6 +171,104 @@ func TestEvaluateWindowsUsesIANAZoneAcrossDST(t *testing.T) {
 	}
 }
 
+func TestValidateScheduleReportsActionableFieldErrors(t *testing.T) {
+	valid := availabilityv1alpha1.NodeActivitySpec{
+		LeadTime: "0s",
+		Windows: []availabilityv1alpha1.AvailabilityWindow{{
+			Schedule: "30 1 * * *", Duration: "90m", TimeZone: "America/New_York", State: "interactive",
+		}},
+	}
+	if err := validateSchedule(valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSchedule(availabilityv1alpha1.NodeActivitySpec{}); err != nil {
+		t.Fatal(err)
+	}
+	spec := availabilityv1alpha1.NodeActivitySpec{
+		LeadTime: "-5m",
+		Windows: []availabilityv1alpha1.AvailabilityWindow{
+			{Schedule: "not a cron", Duration: "0s", TimeZone: "Not/AZone", State: "gaming"},
+			{Schedule: "0 20 * * * *", Duration: "-1h", TimeZone: "UTC", State: "game"},
+		},
+	}
+	err := validateSchedule(spec)
+	if err == nil {
+		t.Fatal("expected invalid schedule")
+	}
+	for _, want := range []string{
+		`spec.leadTime "-5m" must be a non-negative duration`,
+		`spec.windows[0].schedule "not a cron"`,
+		"five-field cron",
+		`spec.windows[0].duration "0s" must be a positive duration`,
+		`spec.windows[0].state "gaming" must be game, interactive, or idle-allowed`,
+		`spec.windows[0].timeZone "Not/AZone"`,
+		"IANA",
+		`spec.windows[1].schedule "0 20 * * * *"`,
+		`spec.windows[1].duration "-1h" must be a positive duration`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q missing %q", err.Error(), want)
+		}
+	}
+	if _, _, _, evalErr := evaluateWindows(spec, time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)); evalErr == nil || evalErr.Error() != err.Error() {
+		t.Fatalf("evaluateWindows err = %v, want %v", evalErr, err)
+	}
+	unparsed := availabilityv1alpha1.NodeActivitySpec{
+		LeadTime: "soon",
+		Windows:  []availabilityv1alpha1.AvailabilityWindow{{Schedule: "", Duration: "2", State: "interactive"}},
+	}
+	err = validateSchedule(unparsed)
+	if err == nil || !strings.Contains(err.Error(), `spec.leadTime "soon"`) || !strings.Contains(err.Error(), `spec.windows[0].duration "2"`) || !strings.Contains(err.Error(), `spec.windows[0].schedule ""`) {
+		t.Fatalf("unparsed schedule error = %v", err)
+	}
+}
+
+func TestDesiredTaintKeepsHeartbeatProtectionWhenScheduleIsInvalid(t *testing.T) {
+	now := time.Date(2026, 8, 24, 20, 30, 0, 0, time.UTC)
+	r := &NodeActivityReconciler{Policy: testPolicy()}
+	activity := &availabilityv1alpha1.NodeActivity{
+		Spec: availabilityv1alpha1.NodeActivitySpec{Windows: []availabilityv1alpha1.AvailabilityWindow{{Schedule: "nope", Duration: "1h", State: "game", TimeZone: "Not/AZone"}}},
+		Status: availabilityv1alpha1.NodeActivityStatus{
+			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
+		},
+	}
+	taint, _, _, scheduled, _, err := r.desiredTaint(activity, now)
+	if err != nil || scheduled || taint == nil || taint.Value != testPolicy().ActiveValue || taint.Effect != corev1.TaintEffectNoSchedule {
+		t.Fatalf("live game taint=%#v scheduled=%v err=%v", taint, scheduled, err)
+	}
+	activity.Status.State = availabilityv1alpha1.StateActive
+	activity.Status.Activity = availabilityv1alpha1.ActivityInteractive
+	taint, _, _, scheduled, _, err = r.desiredTaint(activity, now)
+	if err != nil || scheduled || taint == nil || taint.Value != testPolicy().InteractiveValue || taint.Effect != corev1.TaintEffectPreferNoSchedule {
+		t.Fatalf("live interactive taint=%#v scheduled=%v err=%v", taint, scheduled, err)
+	}
+	activity.Status.HeartbeatAt = time.Time{}
+	taint, _, _, scheduled, _, err = r.desiredTaint(activity, now)
+	if err != nil || scheduled || taint == nil || taint.Value != testPolicy().FailClosedValue || taint.Effect != corev1.TaintEffectNoSchedule {
+		t.Fatalf("missing heartbeat taint=%#v scheduled=%v err=%v", taint, scheduled, err)
+	}
+	activity.Status.HeartbeatAt = now.Add(-2 * time.Minute)
+	activity.Status.State = availabilityv1alpha1.StateIdle
+	taint, _, _, scheduled, _, err = r.desiredTaint(activity, now)
+	if err != nil || scheduled || taint == nil || taint.Value != testPolicy().FailClosedValue {
+		t.Fatalf("stale heartbeat taint=%#v scheduled=%v err=%v", taint, scheduled, err)
+	}
+	activity.Status.HeartbeatAt = now
+	activity.Status.State = availabilityv1alpha1.StateIdle
+	activity.Status.Activity = availabilityv1alpha1.ActivityIdle
+	taint, _, _, scheduled, _, err = r.desiredTaint(activity, now)
+	if err != nil || scheduled || taint == nil || taint.Value != testPolicy().FailClosedValue || taint.Effect != corev1.TaintEffectNoSchedule {
+		t.Fatalf("fresh idle invalid schedule taint=%#v scheduled=%v err=%v", taint, scheduled, err)
+	}
+	open := r.Policy
+	open.FailClosed = false
+	r.Policy = open
+	taint, message, _, _, _, err := r.desiredTaint(activity, now)
+	if err != nil || taint != nil || !strings.Contains(message, "fail-closed disabled") {
+		t.Fatalf("fail-closed disabled taint=%#v message=%q err=%v", taint, message, err)
+	}
+}
+
 func TestDesiredTaintWindowOverridesInteractiveButNotLiveGame(t *testing.T) {
 	now := time.Date(2026, 8, 24, 20, 30, 0, 0, time.UTC)
 	activity := &availabilityv1alpha1.NodeActivity{Spec: availabilityv1alpha1.NodeActivitySpec{Windows: []availabilityv1alpha1.AvailabilityWindow{{Schedule: "0 20 * * *", Duration: "2h", TimeZone: "UTC", State: "game"}}}, Status: availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityInteractive, HeartbeatAt: now}}
