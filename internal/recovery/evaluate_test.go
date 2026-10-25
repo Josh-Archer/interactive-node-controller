@@ -304,3 +304,37 @@ func containsProblem(problems []string, needle string) bool {
 	}
 	return false
 }
+
+func TestEvaluateRejectsEvictionOfNonDisposableWorkload(t *testing.T) {
+	report := passingKindReport()
+	for i := range report.Scenarios[0].Workloads {
+		w := &report.Scenarios[0].Workloads[i]
+		if w.Name == WorkloadLossy && w.EvictedDuringScenario {
+			// Evicted, yet the observation says it still holds its requests.
+			w.HoldsResourcesAfter = true
+		}
+	}
+	problems := Evaluate(report)
+	if !containsProblem(problems, "eviction breaks the disposable opt-in contract") {
+		t.Fatalf("problems: %s", strings.Join(problems, "\n"))
+	}
+}
+
+func TestEvaluateRejectsGatedSurvivorReleasingRequests(t *testing.T) {
+	report := passingKindReport()
+	found := false
+	for i := range report.Scenarios[0].Workloads {
+		w := &report.Scenarios[0].Workloads[i]
+		if w.Name == WorkloadStandard && !w.EvictedDuringScenario {
+			w.HoldsResourcesAfter = false
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("scenario %s has no surviving standard workload", report.Scenarios[0].Name)
+	}
+	problems := Evaluate(report)
+	if !containsProblem(problems, "should still hold its requests") {
+		t.Fatalf("problems: %s", strings.Join(problems, "\n"))
+	}
+}
