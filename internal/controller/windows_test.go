@@ -572,7 +572,7 @@ func TestReconcileRequeuesAtLeadTimeWithoutReporterEvent(t *testing.T) {
 	if err := availabilityv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	api := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(activity).WithObjects(activity, node).Build()
+	api := indexNodeActivities(fake.NewClientBuilder().WithScheme(scheme)).WithStatusSubresource(activity).WithObjects(activity, node).Build()
 	reconciler := &NodeActivityReconciler{Client: api, Clock: clock, Policy: policy}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: activity.Namespace, Name: activity.Name}}
 
