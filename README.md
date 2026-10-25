@@ -154,6 +154,12 @@ kubeconfig first. The test refuses contexts whose name does not start with
 `kind-`, and removes its test namespace when it finishes. CI creates and removes
 its own Kubernetes 1.32.0 Kind cluster.
 
+`make test-recovery` is optional and is not part of `make verify`. It needs
+Docker and Kind, creates cluster `inc-recovery`, and deletes that cluster when
+it finishes. The run measures controller-only detection, admission, eviction
+acceptance, and CPU/memory release, and it does not claim desktop performance.
+See [docs/desktop-recovery-canary.md](docs/desktop-recovery-canary.md).
+
 ## License
 
 Interactive Node Controller is licensed under the [Apache License, Version 2.0](LICENSE).

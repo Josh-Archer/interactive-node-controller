@@ -1,4 +1,4 @@
-.PHONY: build-linux-amd64 build-linux-arm64 build-controller fmt fmt-check test test-api test-kind vet contracts ansible-syntax chart-lint docker-build verify
+.PHONY: build-linux-amd64 build-linux-arm64 build-controller fmt fmt-check test test-api test-kind test-recovery vet contracts ansible-syntax chart-lint docker-build verify
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS ?= -s -w -X main.version=$(VERSION)
@@ -34,6 +34,10 @@ test-api:
 test-kind:
 	KIND_INTEGRATION=true go test ./internal/controller -run '^TestEvictionKindPDBSafety$$' -count=1 -v
 
+# Creates and deletes Kind cluster inc-recovery. Not part of verify.
+test-recovery:
+	./scripts/measure-desktop-recovery.sh
+
 vet:
 	go vet ./...
 
@@ -44,6 +48,7 @@ contracts:
 	./scripts/test-phase3-contract.sh
 	./scripts/test-phase4-contract.sh
 	./scripts/test-phase5-contract.sh
+	./scripts/test-recovery-measurement-contract.sh
 
 ansible-syntax:
 	ANSIBLE_ROLES_PATH=ansible/roles ansible-playbook --syntax-check ansible/syntax-check.yml
