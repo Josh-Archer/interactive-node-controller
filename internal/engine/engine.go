@@ -23,6 +23,7 @@ type Evaluator struct {
 	pending      signals.Activity
 	pendingCount int
 	lastGood     time.Time
+	firstSeen    time.Time
 	lastObserved time.Time
 	lastState    reporter.State
 	lastActivity signals.Activity
@@ -38,6 +39,9 @@ func (e *Evaluator) Next(observations []signals.Observation, now time.Time) repo
 	state := reporter.StateUnknown
 	activity := signals.ActivityUnknown
 	observedAt := now
+	if e.firstSeen.IsZero() {
+		e.firstSeen = now
+	}
 
 	if candidate == signals.ActivityUnknown {
 		e.pending = signals.ActivityUnknown
@@ -47,6 +51,13 @@ func (e *Evaluator) Next(observations []signals.Observation, now time.Time) repo
 			if now.Sub(e.lastGood) >= e.staleAfter {
 				state = reporter.StateStale
 				reason = fmt.Sprintf("last successful observation is stale: %s", reason)
+			}
+		} else {
+			// Never had a good observation: unknown, then stale after staleAfter (#77).
+			observedAt = e.firstSeen
+			if now.Sub(e.firstSeen) >= e.staleAfter {
+				state = reporter.StateStale
+				reason = fmt.Sprintf("no successful observation since reporter start: %s", reason)
 			}
 		}
 	} else {
