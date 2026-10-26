@@ -317,6 +317,17 @@ func (r *NodeActivityReconciler) evictionClass(activity *availabilityv1alpha1.No
 		return evictionClassLossyOnly
 	}
 
+	// A stale heartbeat evicts only through the fail-closed row above. With
+	// fail-closed disabled (or its NoSchedule not yet applied) nothing evicts.
+	if staleHeartbeat || activity.Status.State == availabilityv1alpha1.StateStale {
+		return evictionClassNone
+	}
+	// No desired taint means the node admits new Pods (for example a scheduled
+	// idle-allowed window). Evicting while admitting only causes churn.
+	if desired == nil {
+		return evictionClassNone
+	}
+
 	// Burst NoSchedule is a scheduling fence on every node that is not fresh
 	// idle. It authorizes lossy eviction only after the fresh-unknown and
 	// fresh-idle stand-down cases above have been excluded.
