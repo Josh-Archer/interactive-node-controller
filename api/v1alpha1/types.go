@@ -90,9 +90,12 @@ type BurstTaintStatus struct {
 // workload on the Node.
 //
 // HeartbeatValid and HeartbeatAgeSeconds describe the heartbeat that produced
-// the node policy. When several enrollments target one Node, that heartbeat
-// belongs to the winning enrollment, which can differ from this object's
-// status.heartbeatAt.
+// the node policy. HeartbeatValid is true when that timestamp is set, younger
+// than stale-after, and not further ahead than heartbeat-skew. HeartbeatAgeSeconds
+// is omitted when the timestamp is missing or further ahead than the tolerance,
+// because the API schema rejects a negative age. When several enrollments target
+// one Node, that heartbeat belongs to the winning enrollment, which can differ
+// from this object's status.heartbeatAt.
 type AdmissionStatus struct {
 	Admitted             bool             `json:"admitted"`
 	Reason               string           `json:"reason"`

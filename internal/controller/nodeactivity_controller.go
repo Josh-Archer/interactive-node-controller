@@ -29,6 +29,16 @@ const (
 	// be evaluated. The message names each bad field. Heartbeat and live-activity
 	// protection still reconcile.
 	InvalidScheduleCondition = "InvalidSchedule"
+	// InvalidHeartbeatCondition is True when status.heartbeatAt is further ahead
+	// of the controller clock than heartbeat-skew. The node fails closed. The
+	// timestamp does not authorize eviction. A later timestamp inside the
+	// tolerance sets the condition False.
+	InvalidHeartbeatCondition = "InvalidHeartbeat"
+	// FutureHeartbeatReason is the InvalidHeartbeat reason for that lead.
+	FutureHeartbeatReason = "FutureHeartbeat"
+	// HeartbeatTimeValidReason clears InvalidHeartbeat once the timestamp is
+	// no longer further ahead than heartbeat-skew.
+	HeartbeatTimeValidReason = "HeartbeatTimeValid"
 	NodeActivityFinalizer    = "availability.interactive-node.io/cleanup"
 	SchedulableNodeLabel     = "availability.interactive-node.io/schedulable"
 	HoldAnnotation           = "availability.interactive-node.io/hold"
@@ -44,7 +54,12 @@ type TaintPolicy struct {
 	FailClosedValue  string
 	BurstTaintKey    string
 	StaleAfter       time.Duration
-	FailClosed       bool
+	// HeartbeatSkew is how far status.heartbeatAt may be ahead of the controller
+	// clock and still count as fresh. Zero selects DefaultHeartbeatSkew. A
+	// larger lead fails closed and does not authorize eviction. A positive
+	// value must be shorter than StaleAfter.
+	HeartbeatSkew time.Duration
+	FailClosed    bool
 }
 
 func (p TaintPolicy) Validate() error {
@@ -56,6 +71,12 @@ func (p TaintPolicy) Validate() error {
 	}
 	if p.StaleAfter <= 0 {
 		return fmt.Errorf("stale-after must be positive")
+	}
+	if p.HeartbeatSkew < 0 {
+		return fmt.Errorf("heartbeat-skew must not be negative")
+	}
+	if skew := p.effectiveHeartbeatSkew(); skew >= p.StaleAfter {
+		return fmt.Errorf("heartbeat-skew %s must be less than stale-after %s", skew, p.StaleAfter)
 	}
 	if p.BurstTaintKey == "" {
 		return nil
@@ -118,13 +139,16 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
 			return ctrl.Result{}, err
 		}
-		valid, age := heartbeatObservation(activity.Status.HeartbeatAt, r.clock().Now(), r.Policy.StaleAfter)
+		verdict := heartbeatFreshness(activity.Status.HeartbeatAt, r.clock().Now(), r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
+		if err := r.setHeartbeatCondition(ctx, activity); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, r.setAdmission(ctx, activity, &availabilityv1alpha1.AdmissionStatus{
 			Admitted:            false,
 			Reason:              admissionInvalidEnrollment,
 			Message:             "spec.nodeName is required",
-			HeartbeatValid:      valid,
-			HeartbeatAgeSeconds: age,
+			HeartbeatValid:      verdict.Fresh,
+			HeartbeatAgeSeconds: verdict.AgeSeconds,
 		})
 	}
 
@@ -153,6 +177,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 				return ctrl.Result{}, err
 			}
 			if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.setHeartbeatCondition(ctx, activity); err != nil {
 				return ctrl.Result{}, err
 			}
 			if err := r.setAdmission(ctx, activity, r.admissionStatus(protection, false, false, admissionNodeNotFound)); err != nil {
@@ -199,6 +226,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	if err := r.setScheduleCondition(ctx, activity, scheduleErr); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.setHeartbeatCondition(ctx, activity); err != nil {
+		return ctrl.Result{}, err
+	}
 	burstApplied := r.Policy.BurstTaintKey != "" && hasTaint(node, r.Policy.BurstTaintKey, r.Policy.FailClosedValue, corev1.TaintEffectNoSchedule)
 	if err := r.setAdmission(ctx, activity, r.admissionStatus(protection, admitted, burstApplied, "")); err != nil {
 		return ctrl.Result{}, err
@@ -226,8 +256,8 @@ func (r *NodeActivityReconciler) policyAdmitted(protection enrollmentProtection,
 	if protection.source == nil {
 		return false
 	}
-	fresh := heartbeatFresh(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter)
-	return controllerAdmitted(fresh, protection.source.Status.State, protection.source.Status.Activity, protection.taint)
+	verdict := heartbeatFreshness(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
+	return controllerAdmitted(verdict.Fresh, protection.source.Status.State, protection.source.Status.Activity, protection.taint)
 }
 
 func (r *NodeActivityReconciler) evictionWithoutPods(nodeMissing bool) evictionSummary {
@@ -246,7 +276,7 @@ func (r *NodeActivityReconciler) admissionStatus(protection enrollmentProtection
 	if protection.source != nil {
 		heartbeatAt = protection.source.Status.HeartbeatAt
 	}
-	valid, age := heartbeatObservation(heartbeatAt, now, r.Policy.StaleAfter)
+	verdict := heartbeatFreshness(heartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
 	reason := protection.admissionReason
 	message := protection.reason
 	if reasonOverride == admissionNodeNotFound {
@@ -262,8 +292,8 @@ func (r *NodeActivityReconciler) admissionStatus(protection enrollmentProtection
 		Admitted:            admitted,
 		Reason:              reason,
 		Message:             message,
-		HeartbeatValid:      valid,
-		HeartbeatAgeSeconds: age,
+		HeartbeatValid:      verdict.Fresh,
+		HeartbeatAgeSeconds: verdict.AgeSeconds,
 		BurstTaint: availabilityv1alpha1.BurstTaintStatus{
 			Configured: r.Policy.BurstTaintKey != "",
 			Desired:    r.Policy.BurstTaintKey != "" && !r.policyAdmitted(protection, now),
@@ -295,14 +325,14 @@ func (r *NodeActivityReconciler) observeNodeSignals(nodeName string, protection 
 		return
 	}
 	now := r.clock().Now()
-	fresh := heartbeatFresh(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter)
+	verdict := heartbeatFreshness(protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
 	reason := protection.admissionReason
 	if reason == "" {
 		reason = admissionUnsupportedState
 	}
 	observeWindowMetrics(nodeName, protection.scheduled, protection.nextWindow)
-	observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, fresh)
-	observeAdmission(nodeName, protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter, reason, r.Policy.BurstTaintKey != "", burstApplied, protection.nextTransition)
+	observeActivityAndTaint(nodeName, protection.source.Status.State, protection.source.Status.Activity, protection.taint, verdict.Fresh)
+	observeAdmission(nodeName, protection.source.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew(), reason, r.Policy.BurstTaintKey != "", burstApplied, protection.nextTransition)
 	observeConfigInvalid(nodeName, scheduleInvalid)
 }
 
@@ -337,14 +367,11 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	var changedBurst bool
 	if r.Policy.BurstTaintKey != "" {
 		var desiredBurst *corev1.Taint
-		if protection.source != nil {
-			fresh := !protection.source.Status.HeartbeatAt.IsZero() && r.clock().Now().Sub(protection.source.Status.HeartbeatAt) < r.Policy.StaleAfter
-			if !(fresh && protection.source.Status.State == availabilityv1alpha1.StateIdle && protection.source.Status.Activity == availabilityv1alpha1.ActivityIdle && protection.taint == nil) {
-				desiredBurst = &corev1.Taint{
-					Key:    r.Policy.BurstTaintKey,
-					Value:  r.Policy.FailClosedValue,
-					Effect: corev1.TaintEffectNoSchedule,
-				}
+		if protection.source != nil && !r.policyAdmitted(protection, r.clock().Now()) {
+			desiredBurst = &corev1.Taint{
+				Key:    r.Policy.BurstTaintKey,
+				Value:  r.Policy.FailClosedValue,
+				Effect: corev1.TaintEffectNoSchedule,
 			}
 		}
 		changedBurst = reconcileOwnedTaint(node, r.Policy.BurstTaintKey, desiredBurst)
@@ -447,6 +474,7 @@ const (
 	admissionScheduledIdle        = "scheduled-idle"
 	admissionStaleHeartbeat       = "stale-heartbeat"
 	admissionMissingHeartbeat     = "missing-heartbeat"
+	admissionInvalidHeartbeat     = "invalid-heartbeat"
 	admissionInvalidSchedule      = "invalid-schedule"
 	admissionUnknownState         = "unknown-state"
 	admissionStaleState           = "stale-state"
@@ -505,15 +533,28 @@ func (r *NodeActivityReconciler) decidePolicy(activity *availabilityv1alpha1.Nod
 	if windowWait > 0 {
 		windowBoundary = transitionCandidate{at: now.Add(windowWait), kind: transitionWindow}
 	}
-	if !heartbeatFresh(activity.Status.HeartbeatAt, now, r.Policy.StaleAfter) {
-		taint, message, delay := r.failClosed("host heartbeat is missing or stale")
+	skew := r.Policy.effectiveHeartbeatSkew()
+	verdict := heartbeatFreshness(activity.Status.HeartbeatAt, now, r.Policy.StaleAfter, skew)
+	if !verdict.Fresh {
+		base := "host heartbeat is missing or stale"
+		reason := admissionStaleHeartbeat
+		if verdict.Missing {
+			reason = admissionMissingHeartbeat
+		}
+		if verdict.Future {
+			base = futureHeartbeatMessage(activity.Status.HeartbeatAt, skew)
+			reason = admissionInvalidHeartbeat
+		}
+		taint, message, delay := r.failClosed(base)
+		if verdict.Future {
+			delay = minPositive(activity.Status.HeartbeatAt.Add(-skew).Sub(now), delay)
+			plausibleAt := activity.Status.HeartbeatAt.Add(-skew)
+			decision.nextTransition, decision.transitionReason = earliestTransition(now, transitionCandidate{at: plausibleAt, kind: transitionHeartbeat})
+		}
 		decision.taint = taint
 		decision.message = message
 		decision.requeueAfter = minPositive(delay, windowWait)
-		decision.admissionReason = admissionStaleHeartbeat
-		if activity.Status.HeartbeatAt.IsZero() {
-			decision.admissionReason = admissionMissingHeartbeat
-		}
+		decision.admissionReason = reason
 		return decision, nil
 	}
 	heartbeatDeadline := activity.Status.HeartbeatAt.Add(r.Policy.StaleAfter)
@@ -748,6 +789,33 @@ func reconcileSchedulableLabel(node *corev1.Node, schedulable bool) bool {
 		}
 	}
 	return false
+}
+
+func (r *NodeActivityReconciler) setHeartbeatCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity) error {
+	verdict := heartbeatFreshness(activity.Status.HeartbeatAt, r.clock().Now(), r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
+	existing := meta.FindStatusCondition(activity.Status.Conditions, InvalidHeartbeatCondition)
+	if !verdict.Future && (existing == nil || existing.Status == metav1.ConditionFalse) {
+		return nil
+	}
+	before := activity.DeepCopy()
+	condition := metav1.Condition{
+		Type:               InvalidHeartbeatCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             HeartbeatTimeValidReason,
+		Message:            "heartbeat timestamp is not further ahead than heartbeat-skew",
+		ObservedGeneration: activity.Generation,
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	}
+	if verdict.Future {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = FutureHeartbeatReason
+		condition.Message = futureHeartbeatMessage(activity.Status.HeartbeatAt, r.Policy.effectiveHeartbeatSkew()) + "; node stays fail-closed and this timestamp does not authorize eviction"
+	}
+	meta.SetStatusCondition(&activity.Status.Conditions, condition)
+	if reflect.DeepEqual(before.Status, activity.Status) {
+		return nil
+	}
+	return r.Status().Patch(ctx, activity, client.MergeFrom(before))
 }
 
 func (r *NodeActivityReconciler) setScheduleCondition(ctx context.Context, activity *availabilityv1alpha1.NodeActivity, scheduleErr error) error {

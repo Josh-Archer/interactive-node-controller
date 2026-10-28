@@ -112,8 +112,11 @@ with Node permissions, and it owns only its configured taint key.
 | interactive `active` | `PreferNoSchedule` |
 | game `active` | `NoSchedule` |
 | `unknown`, `stale`, or expired heartbeat | `NoSchedule` fail-closed (default) |
+| heartbeat further ahead than `heartbeat-skew` (default 15s) | `NoSchedule` fail-closed; eviction stays inactive |
 
-The controller never changes workload specifications. Phase 3 adds a disabled,
+The controller never changes workload specifications. A heartbeat timestamp further ahead of the controller than `taint.heartbeatSkew` (flag `--heartbeat-skew`, default 15s) is not fresh. The controller records condition `InvalidHeartbeat` with reason `FutureHeartbeat` and admission reason `invalid-heartbeat`. Eviction stays inactive for that timestamp. A later heartbeat inside the tolerance clears the condition. Compare reporter and controller NTP when it appears. See [controller operations](docs/controller.md).
+
+Phase 3 adds a disabled,
 audit-only-by-default safe eviction path. Standard evictions require an explicit
 `interactive-node-controller.io/evictable: "true"` Pod label, active game
 state, the managed `NoSchedule` taint, and consumer opt-in flags. Ephemeral burst

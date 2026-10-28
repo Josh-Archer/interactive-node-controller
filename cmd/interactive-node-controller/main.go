@@ -39,6 +39,7 @@ func run() error {
 	flag.StringVar(&policy.FailClosedValue, "fail-closed-taint-value", "unavailable", "taint value used for stale or unknown state")
 	flag.StringVar(&policy.BurstTaintKey, "burst-taint-key", "", "optional secondary taint key applied with NoSchedule when node is not fresh idle")
 	flag.DurationVar(&policy.StaleAfter, "stale-after", time.Minute, "heartbeat age after which the node fails closed")
+	flag.DurationVar(&policy.HeartbeatSkew, "heartbeat-skew", controller.DefaultHeartbeatSkew, "future heartbeat lead still treated as fresh; 0 selects the default ("+controller.DefaultHeartbeatSkew.String()+"); a larger lead fails closed and does not authorize eviction")
 	flag.BoolVar(&policy.FailClosed, "fail-closed", true, "apply NoSchedule for unknown or stale host state")
 	flag.BoolVar(&eviction.Enabled, "eviction-enabled", false, "allow eligible Pods to be sent to the Kubernetes Eviction API")
 	flag.BoolVar(&eviction.Audit, "eviction-audit", true, "audit eligible eviction candidates without calling the Eviction API")

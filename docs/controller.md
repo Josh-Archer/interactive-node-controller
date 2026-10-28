@@ -79,11 +79,13 @@ and removing the owned taint with `kubectl taint nodes <node> <key>-`.
 
 ## State and stale behavior
 
-The chart defaults to a one-minute heartbeat deadline and `failClosed: true`.
-A missing, stale, `unknown`, or unsupported status yields the configured
-`NoSchedule` fail-closed taint. `idle` removes the owned taint. Interactive
-desktop state applies `PreferNoSchedule`; active game state applies
-`NoSchedule`.
+The chart defaults to a one-minute heartbeat deadline, a 15-second
+`heartbeat-skew` tolerance, and `failClosed: true`. A missing, stale,
+`unknown`, or unsupported status yields the configured `NoSchedule`
+fail-closed taint. A `heartbeatAt` further ahead than `heartbeat-skew` does
+too, and that timestamp does not authorize eviction. `idle` removes the owned
+taint. Interactive desktop state applies `PreferNoSchedule`; active game
+state applies `NoSchedule`.
 
 Chart value `taint.burstKey` maps to `--burst-taint-key`. An empty value omits
 the flag and preserves single-taint behavior. A configured value must be a
@@ -108,8 +110,12 @@ place an arbitrary workload on the Node. Other taints, resources, affinity, and
 the workload's own selector still apply.
 
 `heartbeatValid` and `heartbeatAgeSeconds` describe the heartbeat that produced
-the node policy. `reason` is a bounded admission code such as `fresh-idle`,
-`active-game`, `stale-heartbeat`, `missing-heartbeat`, or `invalid-schedule`.
+the node policy. `heartbeatValid` is true when that timestamp is set, younger
+than `staleAfter`, and not further ahead than `heartbeat-skew`.
+`heartbeatAgeSeconds` is omitted when the timestamp is missing or further
+ahead than the tolerance. `reason` is a bounded admission code such as
+`fresh-idle`, `active-game`, `stale-heartbeat`, `missing-heartbeat`,
+`invalid-heartbeat`, or `invalid-schedule`.
 `burstTaint.configured`, `desired`, and `applied` describe the optional burst
 NoSchedule fence. `nextTransition` and `nextTransitionReason` (`heartbeat`,
 `hold`, or `window`) are the next clock boundary that can change that policy.
@@ -127,7 +133,7 @@ metrics:
 - `interactive_node_controller_taint{node,key,value,effect}`
 - `interactive_node_controller_schedulable{node}` is 1 only for the fresh-idle stand-down above, and 0 otherwise
 - `interactive_node_controller_admission{node,reason}` is 1 on the active bounded reason
-- `interactive_node_controller_heartbeat_valid{node}` and `interactive_node_controller_heartbeat_age_seconds{node}`
+- `interactive_node_controller_heartbeat_valid{node}` and `interactive_node_controller_heartbeat_age_seconds{node}`. The age gauge is negative when the winning heartbeat is further ahead than `heartbeat-skew`. The status field stays unset in that case.
 - `interactive_node_controller_burst_taint{node}` is 1 when the configured burst taint is present and 0 when the key is configured but the taint is absent
 - `interactive_node_controller_next_transition_timestamp_seconds{node}`
 - `interactive_node_controller_config_invalid{node,reason="schedule"}` is 1 while `InvalidSchedule` is true
@@ -138,6 +144,57 @@ the Node label. They do not report that arbitrary workloads can schedule.
 Deleting the enrollment or losing the Node clears these per-node series.
 Example queries and alerts are in
 [`examples/monitoring`](../examples/monitoring/queries.md).
+
+## Heartbeat clock skew
+
+`status.heartbeatAt` is fresh when it is set, strictly younger than
+`staleAfter`, and no further ahead of the controller clock than
+`heartbeat-skew`. The flag is `--heartbeat-skew`. The chart value is
+`taint.heartbeatSkew`. Both default to 15s. A value of `0` selects that
+default. A positive value must be shorter than `staleAfter`.
+
+Protection, the schedulable label, admission metrics, enrollment aggregation,
+and eviction all use this one rule. A lead inside the tolerance still counts
+as fresh, and `heartbeatAgeSeconds` stays 0 so a few seconds of NTP error
+does not look stale. A larger lead is not fresh. The controller applies the
+fail-closed `NoSchedule` taint, sets `status.admission.reason` to
+`invalid-heartbeat`, and sets condition `InvalidHeartbeat` to True with
+reason `FutureHeartbeat`. The message names `heartbeatAt` and the tolerance.
+Eviction stays inactive, including when the last activity was `game` or a
+burst fence is present. An explicit reporter `state=stale`, a missing
+timestamp, or a timestamp older than `staleAfter` still follows the stale
+eviction row. The API rejects an unparseable `heartbeatAt` and leaves the
+previous status in place; a rejected patch is not a stale heartbeat.
+
+The reconcile requeues for the moment the stored timestamp enters the
+tolerance. A later heartbeat inside the tolerance, or a controller clock that
+brings the stored timestamp back inside it, sets `InvalidHeartbeat` to False
+with reason `HeartbeatTimeValid` and resumes normal policy.
+
+### Diagnosis
+
+1. Read the condition, the admission reason, and the timestamp:
+
+   ```bash
+   kubectl get nodeactivity <name> -n <namespace> -o jsonpath='{.status.conditions[?(@.type=="InvalidHeartbeat")]}{"\n"}{.status.admission.reason}{"\n"}{.status.heartbeatAt}{"\n"}'
+   ```
+
+   `InvalidHeartbeat` True and reason `FutureHeartbeat` means `heartbeatAt` is
+   ahead of this controller by more than `heartbeat-skew`.
+
+2. Compare clocks. Check NTP on the host that runs the reporter and on the
+   node that runs the controller. `heartbeatAt` is the reporter's clock.
+   `heartbeat-skew` is the controller's allowance.
+
+3. Prometheus: `interactive_node_controller_heartbeat_valid == 0` together
+   with `interactive_node_controller_admission{reason="invalid-heartbeat"} == 1`.
+   `interactive_node_controller_heartbeat_age_seconds` is negative by the
+   whole seconds of lead. `status.admission.heartbeatAgeSeconds` stays unset
+   because the API schema rejects a negative age (`minimum: 0`).
+
+4. After clocks agree, the next heartbeat inside the tolerance clears the
+   condition. Widening `heartbeat-skew` hides a stuck reporter clock and
+   extends admission by that much; keep it at a small NTP bound.
 
 ## Install boundary
 
@@ -181,7 +238,7 @@ does not call the Eviction API.
 
 ### Eviction matrix
 
-`Fresh` means `status.heartbeatAt` is set and younger than `staleAfter`.
+`Fresh` means `status.heartbeatAt` is set, strictly younger than `staleAfter`, and not further ahead of the controller clock than `heartbeat-skew`.
 The optional burst `NoSchedule` taint (`--burst-taint-key`) is a scheduling
 fence for every Node that is not fresh idle. It does not authorize eviction
 of a fresh `unknown` report, and it never authorizes eviction of a standard pod.
@@ -193,6 +250,7 @@ of a fresh `unknown` report, and it never authorizes eviction of a standard pod.
 | Fresh active `game` with the active `NoSchedule` taint desired and applied, whether or not the burst fence is also present | yes | yes |
 | Fresh `state=unknown` (reporter startup or debounce), including when fail-closed `NoSchedule` and the burst `NoSchedule` fence are both applied | no | no |
 | Heartbeat missing or older than `staleAfter`, or reporter `state=stale`, while fail-closed `NoSchedule` is desired and applied. An expired heartbeat stays on this row even if the last activity was `game`. | no | yes |
+| Heartbeat further ahead than `heartbeat-skew` (`InvalidHeartbeat`), while fail-closed `NoSchedule` is desired and applied. A burst fence may also be present. The timestamp leaves eviction inactive. Reporter `state=stale` stays on the row above. | no | no |
 | Scheduled `game` window while the live report is not an active game | no | yes only when the burst `NoSchedule` fence is configured and present; otherwise no |
 | Fresh `state=active` whose activity is not `game` (interactive, or an unsupported activity that fail-closes scheduling) | no | yes |
 | Two or more live enrollments for the Node | no | no |

@@ -34,12 +34,12 @@ var (
 
 	heartbeatAgeMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "interactive_node_controller_heartbeat_age_seconds",
-		Help: "Whole seconds since the heartbeat that produced the node policy. Absent when that heartbeat timestamp is missing.",
+		Help: "Whole seconds since the heartbeat that produced the node policy. Zero when that timestamp is inside the future clock-skew tolerance. Negative when it is further ahead than heartbeat-skew. Absent when the timestamp is missing. status.admission.heartbeatAgeSeconds omits a future timestamp because the API schema rejects a negative age.",
 	}, []string{"node"})
 
 	heartbeatValidMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "interactive_node_controller_heartbeat_valid",
-		Help: "1 when the heartbeat that produced the node policy is set and younger than stale-after.",
+		Help: "1 when the heartbeat that produced the node policy is set, younger than stale-after, and not further ahead than heartbeat-skew.",
 	}, []string{"node"})
 
 	burstTaintMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -118,21 +118,6 @@ func controllerAdmitted(fresh bool, state availabilityv1alpha1.State, activity a
 	return fresh && state == availabilityv1alpha1.StateIdle && activity == availabilityv1alpha1.ActivityIdle && desired == nil
 }
 
-func heartbeatFresh(at, now time.Time, staleAfter time.Duration) bool {
-	return !at.IsZero() && now.Sub(at) < staleAfter
-}
-
-func heartbeatObservation(at, now time.Time, staleAfter time.Duration) (bool, *int64) {
-	if at.IsZero() {
-		return false, nil
-	}
-	seconds := int64(now.Sub(at) / time.Second)
-	if seconds < 0 {
-		seconds = 0
-	}
-	return heartbeatFresh(at, now, staleAfter), &seconds
-}
-
 func observeWindowMetrics(nodeName string, active bool, next time.Time) {
 	if strings.TrimSpace(nodeName) == "" {
 		return
@@ -198,12 +183,12 @@ func observeActivityAndTaint(nodeName string, state availabilityv1alpha1.State, 
 	}
 }
 
-func observeAdmission(nodeName string, heartbeatAt, now time.Time, staleAfter time.Duration, reason string, burstConfigured, burstApplied bool, nextTransition time.Time) {
+func observeAdmission(nodeName string, heartbeatAt, now time.Time, staleAfter, skew time.Duration, reason string, burstConfigured, burstApplied bool, nextTransition time.Time) {
 	nodeName = strings.TrimSpace(nodeName)
 	if nodeName == "" || reason == "" {
 		return
 	}
-	valid, age := heartbeatObservation(heartbeatAt, now, staleAfter)
+	verdict := heartbeatFreshness(heartbeatAt, now, staleAfter, skew)
 	metricsMu.Lock()
 	defer metricsMu.Unlock()
 
@@ -213,11 +198,14 @@ func observeAdmission(nodeName string, heartbeatAt, now time.Time, staleAfter ti
 	admissionMetric.WithLabelValues(nodeName, reason).Set(1)
 	lastAdmissionReason[nodeName] = reason
 
-	heartbeatValidMetric.WithLabelValues(nodeName).Set(boolGauge(valid))
-	if age == nil {
+	heartbeatValidMetric.WithLabelValues(nodeName).Set(boolGauge(verdict.Fresh))
+	switch {
+	case verdict.Missing:
 		heartbeatAgeMetric.DeleteLabelValues(nodeName)
-	} else {
-		heartbeatAgeMetric.WithLabelValues(nodeName).Set(float64(*age))
+	case verdict.Future:
+		heartbeatAgeMetric.WithLabelValues(nodeName).Set(float64(futureAgeSeconds(verdict.Lead)))
+	default:
+		heartbeatAgeMetric.WithLabelValues(nodeName).Set(float64(*verdict.AgeSeconds))
 	}
 	if burstConfigured {
 		burstTaintMetric.WithLabelValues(nodeName).Set(boolGauge(burstApplied))

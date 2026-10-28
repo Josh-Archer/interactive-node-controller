@@ -61,6 +61,7 @@ controller_args "$tmp/unset.yaml" >"$tmp/unset-args.txt"
 assert_lacks "$tmp/unset-args.txt" '--burst-taint-key'
 assert_has "$tmp/unset-args.txt" '--taint-key=availability.interactive-node.io/state'
 assert_has "$tmp/unset-args.txt" '--fail-closed=true'
+assert_has "$tmp/unset-args.txt" '--heartbeat-skew=15s'
 assert_has "$tmp/unset-args.txt" '--eviction-enabled=false'
 
 render --set-string taint.burstKey= >"$tmp/empty.yaml"

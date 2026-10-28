@@ -157,7 +157,11 @@ and rotated by a consumer-owned enrollment mechanism.
    Kubernetes mode.
 5. Confirm the API object heartbeat advances and generation changes only on
    state/activity transitions. Revoke the reporter identity if the host is
-   unenrolled.
+   unenrolled. If the controller reports `InvalidHeartbeat` /
+   `FutureHeartbeat`, compare NTP on this host with the controller clock.
+   `heartbeatAt` further ahead than `heartbeat-skew` (default 15s) fails
+   closed and does not authorize eviction. See the controller clock-skew
+   section in [controller operations](controller.md).
 
 ## Phase 1 limitations
 

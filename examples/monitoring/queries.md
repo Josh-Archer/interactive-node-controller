@@ -16,6 +16,18 @@ interactive_node_controller_heartbeat_age_seconds
 
 `heartbeat_age_seconds` is absent when the winning enrollment has no `heartbeatAt`. `heartbeat_valid` stays 0 in that case. `status.admission.reason` is `missing-heartbeat` or `stale-heartbeat`.
 
+## Heartbeat ahead of the controller
+
+```promql
+interactive_node_controller_admission{reason="invalid-heartbeat"} == 1
+```
+
+```promql
+interactive_node_controller_heartbeat_age_seconds < 0
+```
+
+A negative age means `status.heartbeatAt` is further ahead than `heartbeat-skew` (default 15s). `heartbeat_valid` is 0. `status.admission.heartbeatAgeSeconds` is omitted because the API schema rejects a negative age. Condition `InvalidHeartbeat` is True with reason `FutureHeartbeat`, and the message names the timestamp and the tolerance. Compare NTP on the reporter host and the controller. Eviction stays inactive until a heartbeat inside the tolerance resumes, or the report is missing, expired, or explicitly `state=stale`. Widening the tolerance extends how long a stopped future-dated heartbeat can look fresh.
+
 ## Invalid configuration
 
 ```promql
