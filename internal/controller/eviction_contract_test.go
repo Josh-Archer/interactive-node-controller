@@ -100,6 +100,7 @@ func TestEvictionSafetyContractMatrix(t *testing.T) {
 		zeroHeartbeat   bool
 		staleHeartbeat  bool
 		futureHeartbeat bool
+		futureLead      time.Duration
 		toleratedSkew   bool
 		failClosedOff   bool
 		want            []string
@@ -120,7 +121,10 @@ func TestEvictionSafetyContractMatrix(t *testing.T) {
 		{name: "tolerated future skew remains a fresh game", state: availabilityv1alpha1.StateActive, activity: availabilityv1alpha1.ActivityGame, desired: active, toleratedSkew: true, want: []string{"standard", "lossy"}},
 		{name: "excessive future heartbeat does not authorize eviction", state: availabilityv1alpha1.StateActive, activity: availabilityv1alpha1.ActivityGame, desired: active, futureHeartbeat: true},
 		{name: "excessive future heartbeat with burst does not authorize eviction", state: availabilityv1alpha1.StateActive, activity: availabilityv1alpha1.ActivityGame, desired: active, futureHeartbeat: true, burst: true},
-		{name: "explicit stale state still evicts when the timestamp is future", state: availabilityv1alpha1.StateStale, activity: availabilityv1alpha1.ActivityIdle, desired: failClosed, futureHeartbeat: true, want: []string{"lossy"}},
+		{name: "explicit stale state with future timestamp does not authorize eviction", state: availabilityv1alpha1.StateStale, activity: availabilityv1alpha1.ActivityIdle, desired: failClosed, futureHeartbeat: true},
+		{name: "explicit stale state with 1h future timestamp does not authorize eviction", state: availabilityv1alpha1.StateStale, activity: availabilityv1alpha1.ActivityIdle, desired: failClosed, futureLead: time.Hour},
+		{name: "explicit stale state with 1y future timestamp does not authorize eviction", state: availabilityv1alpha1.StateStale, activity: availabilityv1alpha1.ActivityIdle, desired: failClosed, futureLead: 365 * 24 * time.Hour, burst: true},
+		{name: "explicit stale state with tolerated skew still evicts lossy", state: availabilityv1alpha1.StateStale, activity: availabilityv1alpha1.ActivityIdle, desired: failClosed, toleratedSkew: true, want: []string{"lossy"}},
 		{name: "active unsupported activity is lossy, not fresh unknown", state: availabilityv1alpha1.StateActive, activity: availabilityv1alpha1.ActivityUnknown, desired: failClosed, burst: true, want: []string{"lossy"}},
 	}
 	for _, test := range tests {
@@ -144,6 +148,9 @@ func TestEvictionSafetyContractMatrix(t *testing.T) {
 			}
 			if test.futureHeartbeat {
 				activity.Status.HeartbeatAt = activity.Status.HeartbeatAt.Add(r.Policy.effectiveHeartbeatSkew() + time.Second)
+			}
+			if test.futureLead > 0 {
+				activity.Status.HeartbeatAt = r.Clock.Now().Add(test.futureLead)
 			}
 			desired := test.desired(r)
 			applyContractTaints(node, desired, r.Policy.FailClosedValue, test.burst)

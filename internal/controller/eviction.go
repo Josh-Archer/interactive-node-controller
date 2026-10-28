@@ -288,8 +288,8 @@ func (r *NodeActivityReconciler) evictionClass(activity *availabilityv1alpha1.No
 	verdict := heartbeatFreshness(activity.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
 	// An implausible future timestamp is not evidence the host is gone.
 	// Fail-closed scheduling still applies. The timestamp does not authorize
-	// eviction. An explicit reporter state of stale still follows the stale row.
-	if verdict.Future && activity.Status.State != availabilityv1alpha1.StateStale {
+	// eviction, even when the reporter state is stale.
+	if verdict.Future {
 		return evictionClassNone
 	}
 	fresh := verdict.Fresh
