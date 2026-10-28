@@ -62,7 +62,7 @@ func (r *NodeActivityReconciler) protectionForNode(ctx context.Context, nodeName
 			rank = 1
 			if decision.taint.Effect == corev1.TaintEffectNoSchedule {
 				rank = 2
-				if item.Status.State == availabilityv1alpha1.StateActive && item.Status.Activity == availabilityv1alpha1.ActivityGame && heartbeatFresh(item.Status.HeartbeatAt, now, r.Policy.StaleAfter) {
+				if item.Status.State == availabilityv1alpha1.StateActive && item.Status.Activity == availabilityv1alpha1.ActivityGame && heartbeatFreshness(item.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew()).Fresh {
 					rank = 3
 				}
 			}

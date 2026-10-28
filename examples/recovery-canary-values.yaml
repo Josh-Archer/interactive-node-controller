@@ -10,6 +10,8 @@
 # staleAfter stays at the chart default of 1m. Do not shorten it to meet the
 # recovery budget. The Kind harness uses a shorter staleAfter only inside its
 # disposable cluster and records that difference.
+# heartbeatSkew stays at the chart default of 15s. Do not raise it to hide a
+# future heartbeat. A lead beyond it fails closed and does not authorize eviction.
 image:
   repository: ghcr.io/josh-archer/interactive-node-controller
   digest: sha256:40b00ee4215d468c019ebc41d944c630baaf39ffe7364353274d5a44dafa22b5

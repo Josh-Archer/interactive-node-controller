@@ -37,6 +37,7 @@ spec:
             - --active-taint-value={{ .Values.taint.activeValue }}
             - --fail-closed-taint-value={{ .Values.taint.failClosedValue }}
             - --stale-after={{ .Values.taint.staleAfter }}
+            - --heartbeat-skew={{ .Values.taint.heartbeatSkew | default "15s" }}
             - --fail-closed={{ .Values.taint.failClosed }}
             {{- include "interactive-node-controller.burstTaintArg" . }}
             - --eviction-enabled={{ .Values.eviction.enabled }}

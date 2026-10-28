@@ -56,6 +56,11 @@ taint:
   activeValue: active
   failClosedValue: unavailable
   staleAfter: 1m
+  # Future lead of status.heartbeatAt that still counts as fresh. A larger
+  # lead fails closed, sets InvalidHeartbeat / FutureHeartbeat, and does not
+  # authorize eviction. 0 selects the controller default of 15s. A positive
+  # value must be shorter than staleAfter.
+  heartbeatSkew: 15s
   failClosed: true
   # Optional secondary key passed as --burst-taint-key. Leave this empty to
   # omit the flag and keep single-taint behavior. When set, the controller

@@ -24,7 +24,7 @@ func TestAdmissionSignalDoesNotClaimArbitraryScheduling(t *testing.T) {
 	defer resetMetricsForTesting()
 
 	observeActivityAndTaint("signal-node", availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, nil, true)
-	observeAdmission("signal-node", time.Now(), time.Now(), time.Minute, admissionFreshIdle, false, false, time.Time{})
+	observeAdmission("signal-node", time.Now(), time.Now(), time.Minute, DefaultHeartbeatSkew, admissionFreshIdle, false, false, time.Time{})
 	for _, name := range []string{"interactive_node_controller_schedulable", "interactive_node_controller_admission"} {
 		help := metricHelp(t, name)
 		if !strings.Contains(help, "arbitrary workload") {

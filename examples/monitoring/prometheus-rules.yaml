@@ -15,12 +15,16 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: Host reporter heartbeat is missing or older than stale-after
+            summary: Host reporter heartbeat is missing, stale, or ahead of the controller
             description: >-
-              {{ $labels.node }} has heartbeat_valid 0. status.admission.reason
-              is missing-heartbeat or stale-heartbeat, and the controller keeps
-              its fail-closed fence. This does not mean an arbitrary workload
-              could schedule on the Node.
+              {{ $labels.node }} has heartbeat_valid 0. If
+              heartbeat_age_seconds is negative, status.admission.reason is
+              invalid-heartbeat and condition InvalidHeartbeat is
+              FutureHeartbeat: compare NTP on the reporter host and the
+              controller. Eviction stays inactive for that timestamp. Otherwise
+              the reason is missing-heartbeat or stale-heartbeat and the
+              fail-closed fence stays up. This does not mean an arbitrary
+              workload could schedule on the Node.
         - alert: InteractiveNodeInvalidConfig
           expr: interactive_node_controller_config_invalid{reason="schedule"} == 1
           for: 30m

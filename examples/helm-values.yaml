@@ -11,6 +11,8 @@ taint:
   activeValue: active
   failClosedValue: unavailable
   staleAfter: 1m
+  # Future heartbeat lead that still counts as fresh. See docs/controller.md.
+  heartbeatSkew: 15s
   failClosed: true
   # Optional. Empty omits --burst-taint-key and keeps single-taint behavior.
   # Set a qualified name that differs from taint.key, for example

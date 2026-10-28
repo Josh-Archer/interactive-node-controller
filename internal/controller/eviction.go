@@ -285,8 +285,15 @@ const (
 )
 
 func (r *NodeActivityReconciler) evictionClass(activity *availabilityv1alpha1.NodeActivity, node *corev1.Node, desired *corev1.Taint, now time.Time) evictionClass {
-	staleHeartbeat := activity.Status.HeartbeatAt.IsZero() || now.Sub(activity.Status.HeartbeatAt) >= r.Policy.StaleAfter
-	fresh := !staleHeartbeat
+	verdict := heartbeatFreshness(activity.Status.HeartbeatAt, now, r.Policy.StaleAfter, r.Policy.effectiveHeartbeatSkew())
+	// An implausible future timestamp is not evidence the host is gone.
+	// Fail-closed scheduling still applies. The timestamp does not authorize
+	// eviction. An explicit reporter state of stale still follows the stale row.
+	if verdict.Future && activity.Status.State != availabilityv1alpha1.StateStale {
+		return evictionClassNone
+	}
+	fresh := verdict.Fresh
+	staleHeartbeat := verdict.Missing || verdict.Expired
 
 	// Fresh unknown is a startup or debounce report. Fail-closed and burst
 	// NoSchedule fences still apply, and neither fence authorizes eviction.
