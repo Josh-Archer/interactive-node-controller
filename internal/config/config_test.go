@@ -5,7 +5,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestValidateSampleInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		wantErr  bool
+	}{
+		{name: "zero", interval: 0, wantErr: true},
+		{name: "negative", interval: -time.Second, wantErr: true},
+		{name: "positive", interval: time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Agent.SampleInterval.Duration = tt.interval
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil || err.Error() != "agent.sample_interval must be positive" {
+					t.Fatalf("Validate() error = %v, want agent.sample_interval must be positive", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
 
 func TestLoadDefaults(t *testing.T) {
 	path := writeConfig(t, "{}\n")
