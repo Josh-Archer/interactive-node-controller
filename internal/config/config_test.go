@@ -40,19 +40,25 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !cfg.Agent.FailClosed || !cfg.Signals.Logind.Enabled || cfg.Reporter.Mode != "stdout" {
+	if !cfg.Agent.FailClosed || !cfg.Signals.Logind.Enabled || cfg.Signals.ActivityMode != "game" || cfg.Reporter.Mode != "stdout" {
 		t.Fatalf("unsafe defaults: %#v", cfg)
+	}
+}
+
+func TestSessionActivityModeRemainsAvailable(t *testing.T) {
+	_, err := Load(writeConfig(t, "signals:\n  activity_mode: session\n  game_process:\n    enabled: true\n"))
+	if err != nil {
+		t.Fatalf("legacy session mode rejected: %v", err)
 	}
 }
 
 func TestLoadRejectsUnknownAndMalformedConfiguration(t *testing.T) {
 	tests := map[string]string{
-		"unknown field":       "unexpected: true\n",
-		"fail open":           "agent:\n  fail_closed: false\n",
-		"bad duration":        "agent:\n  sample_interval: soon\n",
-		"no providers":        "signals:\n  logind:\n    enabled: false\n",
-		"unsafe command":      "signals:\n  logind:\n    command: loginctl\n",
-		"empty process match": "signals:\n  logind:\n    enabled: false\n  game_process:\n    enabled: true\n",
+		"unknown field":  "unexpected: true\n",
+		"fail open":      "agent:\n  fail_closed: false\n",
+		"bad duration":   "agent:\n  sample_interval: soon\n",
+		"no providers":   "signals:\n  activity_mode: session\n  logind:\n    enabled: false\n  game_process:\n    enabled: false\n",
+		"unsafe command": "signals:\n  logind:\n    command: loginctl\n",
 	}
 	for name, contents := range tests {
 		t.Run(name, func(t *testing.T) {

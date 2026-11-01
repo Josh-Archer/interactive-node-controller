@@ -63,6 +63,9 @@ func run() error {
 
 func buildProviders(cfg config.Config) []signals.Provider {
 	var providers []signals.Provider
+	if cfg.Signals.ActivityMode == "game" {
+		return []signals.Provider{buildGameProcessProvider(cfg)}
+	}
 	if cfg.Signals.Logind.Enabled {
 		graphicalTypes := make(map[string]struct{}, len(cfg.Signals.Logind.GraphicalTypes))
 		for _, sessionType := range cfg.Signals.Logind.GraphicalTypes {
@@ -76,15 +79,7 @@ func buildProviders(cfg config.Config) []signals.Provider {
 		})
 	}
 	if cfg.Signals.GameProcess.Enabled {
-		names := make(map[string]struct{}, len(cfg.Signals.GameProcess.Names))
-		for _, name := range cfg.Signals.GameProcess.Names {
-			names[name] = struct{}{}
-		}
-		providers = append(providers, signals.ProcessProvider{
-			ProcRoot:            cfg.Signals.GameProcess.ProcRoot,
-			Names:               names,
-			CommandLineContains: cfg.Signals.GameProcess.CommandLineContains,
-		})
+		providers = append(providers, buildGameProcessProvider(cfg))
 	}
 	if cfg.Signals.NVIDIA.Enabled {
 		providers = append(providers, signals.NVIDIAProvider{
@@ -95,6 +90,18 @@ func buildProviders(cfg config.Config) []signals.Provider {
 		})
 	}
 	return providers
+}
+
+func buildGameProcessProvider(cfg config.Config) signals.ProcessProvider {
+	names := make(map[string]struct{}, len(cfg.Signals.GameProcess.Names))
+	for _, name := range cfg.Signals.GameProcess.Names {
+		names[name] = struct{}{}
+	}
+	return signals.ProcessProvider{
+		ProcRoot:            cfg.Signals.GameProcess.ProcRoot,
+		Names:               names,
+		CommandLineContains: cfg.Signals.GameProcess.CommandLineContains,
+	}
 }
 
 func buildReporter(cfg config.Config) (reporter.Reporter, error) {

@@ -43,6 +43,9 @@ func (p ProcessProvider) Observe(_ context.Context) (Activity, string, error) {
 			return ActivityGame, fmt.Sprintf("process name %q matched (pid %s)", name, entry.Name()), nil
 		}
 		commandLine := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		if matched, reason := builtInGameMatch(name, commandLine); matched {
+			return ActivityGame, fmt.Sprintf("%s (pid %s)", reason, entry.Name()), nil
+		}
 		for _, literal := range p.CommandLineContains {
 			if strings.Contains(commandLine, literal) {
 				return ActivityGame, fmt.Sprintf("command-line literal %q matched (pid %s)", literal, entry.Name()), nil
@@ -53,6 +56,27 @@ func (p ProcessProvider) Observe(_ context.Context) (Activity, string, error) {
 		return ActivityUnknown, "", fmt.Errorf("no readable processes in %s", p.ProcRoot)
 	}
 	return ActivityIdle, "no configured game process matched", nil
+}
+
+func builtInGameMatch(name, commandLine string) (bool, string) {
+	lowerName := strings.ToLower(name)
+	lowerCommand := strings.ToLower(commandLine)
+	if lowerName == "gamescope" || strings.Contains(lowerCommand, "gamescope --") {
+		return true, "gamescope process detected"
+	}
+	if lowerName == "reaper" && strings.Contains(lowerCommand, "appid=") {
+		return true, "Steam reaper with AppId detected"
+	}
+	if strings.Contains(lowerCommand, "steamlaunch") && (lowerName == "reaper" || strings.Contains(lowerCommand, "steam") && strings.Contains(lowerCommand, "reaper")) {
+		return true, "Steam SteamLaunch child detected"
+	}
+	if lowerName == "wine" || lowerName == "wine64" || lowerName == "wine-preloader" || lowerName == "wine64-preloader" || lowerName == "proton" || lowerName == "proton-preloader" {
+		return true, fmt.Sprintf("Proton/Wine game process %q detected", name)
+	}
+	if strings.Contains(lowerCommand, "/proton") && (strings.Contains(lowerCommand, "run") || strings.Contains(lowerCommand, "waitforexitandrun")) {
+		return true, "Proton game launch detected"
+	}
+	return false, ""
 }
 
 func readLimited(path string, limit int64) ([]byte, error) {
