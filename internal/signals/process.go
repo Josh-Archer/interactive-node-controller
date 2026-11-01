@@ -39,11 +39,12 @@ func (p ProcessProvider) Observe(_ context.Context) (Activity, string, error) {
 		}
 		readable++
 		name := strings.TrimSpace(string(comm))
+		executable, _ := os.Readlink(filepath.Join(processRoot, "exe"))
 		if _, matched := p.Names[name]; matched {
 			return ActivityGame, fmt.Sprintf("process name %q matched (pid %s)", name, entry.Name()), nil
 		}
 		commandLine := strings.ReplaceAll(string(cmdline), "\x00", " ")
-		if matched, reason := builtInGameMatch(name, commandLine); matched {
+		if matched, reason := builtInGameMatch(name, commandLine, executable); matched {
 			return ActivityGame, fmt.Sprintf("%s (pid %s)", reason, entry.Name()), nil
 		}
 		for _, literal := range p.CommandLineContains {
@@ -58,9 +59,10 @@ func (p ProcessProvider) Observe(_ context.Context) (Activity, string, error) {
 	return ActivityIdle, "no configured game process matched", nil
 }
 
-func builtInGameMatch(name, commandLine string) (bool, string) {
+func builtInGameMatch(name, commandLine, executable string) (bool, string) {
 	lowerName := strings.ToLower(name)
 	lowerCommand := strings.ToLower(commandLine)
+	lowerExecutable := strings.ToLower(filepath.Base(executable))
 	if lowerName == "gamescope" || strings.Contains(lowerCommand, "gamescope --") {
 		return true, "gamescope process detected"
 	}
@@ -70,7 +72,7 @@ func builtInGameMatch(name, commandLine string) (bool, string) {
 	if strings.Contains(lowerCommand, "steamlaunch") && (lowerName == "reaper" || strings.Contains(lowerCommand, "steam") && strings.Contains(lowerCommand, "reaper")) {
 		return true, "Steam SteamLaunch child detected"
 	}
-	if lowerName == "wine" || lowerName == "wine64" || lowerName == "wine-preloader" || lowerName == "wine64-preloader" || lowerName == "proton" || lowerName == "proton-preloader" {
+	if lowerName == "wine" || lowerName == "wine64" || lowerName == "wine-preloader" || lowerName == "wine64-preloader" || lowerName == "proton" || lowerName == "proton-preloader" || strings.HasPrefix(lowerExecutable, "wine") {
 		return true, fmt.Sprintf("Proton/Wine game process %q detected", name)
 	}
 	if strings.Contains(lowerCommand, "/proton") && (strings.Contains(lowerCommand, "run") || strings.Contains(lowerCommand, "waitforexitandrun")) {

@@ -97,7 +97,9 @@ absolute proc root. Built-in matches recognize a Steam `reaper` carrying an
 `AppId`, a Steam `SteamLaunch` reaper child, `gamescope`, Proton launchers, and
 Wine/preloader processes. `names` add exact `/proc/<pid>/comm` matches;
 `command_line_contains` are literal substring matches against NUL-normalized
-`cmdline` data. Neither accepts regular expressions or shell fragments. A
+`cmdline` data. Wine preloader executables are also recognized through
+`/proc/<pid>/exe`, including when the game process has its own `comm` name.
+Neither custom match accepts regular expressions or shell fragments. A
 vanishing process is ignored, while a proc root with no readable processes is
 unknown rather than idle.
 
