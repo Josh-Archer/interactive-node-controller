@@ -9,14 +9,19 @@ agent:
     idle_samples: 3
 
 signals:
+  # game: only recognized game processes make the node active; a desktop
+  # session by itself is idle. Set to session for the legacy logind policy.
+  activity_mode: game
   logind:
     enabled: true
     command: /usr/bin/loginctl
     graphical_types: [wayland, x11]
     timeout: 3s
   game_process:
-    enabled: false
+    enabled: true
     proc_root: /proc
+    # Additional exact /proc/<pid>/comm matches; built-in Steam, gamescope,
+    # Proton, and Wine detection is always active in game mode.
     names: []
     command_line_contains: []
   nvidia:

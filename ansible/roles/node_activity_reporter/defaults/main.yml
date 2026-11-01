@@ -28,6 +28,7 @@ node_activity_reporter_config:
       interactive_samples: 2
       idle_samples: 3
   signals:
+    activity_mode: game
     logind:
       enabled: true
       command: /usr/bin/loginctl
@@ -36,7 +37,7 @@ node_activity_reporter_config:
         - x11
       timeout: 3s
     game_process:
-      enabled: false
+      enabled: true
       proc_root: /proc
       names: []
       command_line_contains: []

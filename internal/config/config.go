@@ -46,9 +46,10 @@ type DebounceConfig struct {
 }
 
 type SignalsConfig struct {
-	Logind      LogindConfig      `yaml:"logind"`
-	GameProcess GameProcessConfig `yaml:"game_process"`
-	NVIDIA      NVIDIAConfig      `yaml:"nvidia"`
+	ActivityMode string            `yaml:"activity_mode"`
+	Logind       LogindConfig      `yaml:"logind"`
+	GameProcess  GameProcessConfig `yaml:"game_process"`
+	NVIDIA       NVIDIAConfig      `yaml:"nvidia"`
 }
 
 type LogindConfig struct {
@@ -100,6 +101,7 @@ func Defaults() Config {
 			},
 		},
 		Signals: SignalsConfig{
+			ActivityMode: "game",
 			Logind: LogindConfig{
 				Enabled:        true,
 				Command:        "/usr/bin/loginctl",
@@ -138,6 +140,9 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.Signals.ActivityMode != "game" && c.Signals.ActivityMode != "session" {
+		return fmt.Errorf("signals.activity_mode must be game or session")
+	}
 	if c.Agent.SampleInterval.Duration <= 0 {
 		return fmt.Errorf("agent.sample_interval must be positive")
 	}
@@ -153,7 +158,7 @@ func (c Config) Validate() error {
 	if !c.Agent.FailClosed {
 		return fmt.Errorf("agent.fail_closed=false is not supported in phase 1")
 	}
-	if !c.Signals.Logind.Enabled && !c.Signals.GameProcess.Enabled && !c.Signals.NVIDIA.Enabled {
+	if c.Signals.ActivityMode == "session" && !c.Signals.Logind.Enabled && !c.Signals.GameProcess.Enabled && !c.Signals.NVIDIA.Enabled {
 		return fmt.Errorf("at least one signal provider must be enabled")
 	}
 	if c.Signals.Logind.Enabled {
@@ -167,12 +172,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("signals.logind.timeout must be positive")
 		}
 	}
-	if c.Signals.GameProcess.Enabled {
+	if c.Signals.GameProcess.Enabled || c.Signals.ActivityMode == "game" {
 		if !filepath.IsAbs(c.Signals.GameProcess.ProcRoot) {
 			return fmt.Errorf("signals.game_process.proc_root must be absolute")
-		}
-		if len(c.Signals.GameProcess.Names) == 0 && len(c.Signals.GameProcess.CommandLineContains) == 0 {
-			return fmt.Errorf("game process matching requires at least one name or command-line literal")
 		}
 		for _, value := range append(append([]string{}, c.Signals.GameProcess.Names...), c.Signals.GameProcess.CommandLineContains...) {
 			if value == "" || len(value) > 256 || strings.ContainsRune(value, '\x00') {

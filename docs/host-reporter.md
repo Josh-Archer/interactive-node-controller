@@ -68,6 +68,13 @@ therefore becomes unknown, then stale after `agent.stale_after` without a good
 observation. Phase 2's controller will use the heartbeat deadline to retain a
 `NoSchedule` posture when the host reporter disappears.
 
+`signals.activity_mode` defaults to `game`. In this mode the reporter uses only
+the game-process provider: a desktop or active logind session is idle unless a
+recognized game process is present. Set `activity_mode: session` to restore the
+legacy combination of enabled logind, game-process, and NVIDIA signals, where
+an active graphical session can report interactive. Heartbeat loss and unknown
+observations remain fail-closed in both modes.
+
 Transitions require consecutive samples. Defaults are one game sample, two
 interactive samples, and three idle samples, making activity protection fast
 and return-to-idle conservative. During a transition the previous established
@@ -86,9 +93,13 @@ identifiers are validated before reuse as command arguments.
 ### Game processes
 
 When enabled, the reporter reads numeric directories below the configured
-absolute proc root. `names` are exact `/proc/<pid>/comm` matches;
+absolute proc root. Built-in matches recognize a Steam `reaper` carrying an
+`AppId`, a Steam `SteamLaunch` reaper child, `gamescope`, Proton launchers, and
+Wine/preloader processes. `names` add exact `/proc/<pid>/comm` matches;
 `command_line_contains` are literal substring matches against NUL-normalized
-`cmdline` data. Neither accepts regular expressions or shell fragments. A
+`cmdline` data. Wine preloader executables are also recognized through
+`/proc/<pid>/exe`, including when the game process has its own `comm` name.
+Neither custom match accepts regular expressions or shell fragments. A
 vanishing process is ignored, while a proc root with no readable processes is
 unknown rather than idle.
 
