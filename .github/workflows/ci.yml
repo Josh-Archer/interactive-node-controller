@@ -37,6 +37,9 @@ jobs:
           echo "KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.32.0)" >> "$GITHUB_ENV"
       - run: go test ./internal/controller -run 'Test(EnrollmentAPIIntegration|EvictionAPIPreconditions|NodeActivityNodeNameIndexEnvtest)$' -count=1 -v
   eviction-kind:
+    # Disabled (Josh's decision, 2026-11-03): kind needs privileged Docker that the
+    # uecb-shared runners lack, so kubeadm init fails. Re-enable on a runner with privileged Docker.
+    if: false
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     timeout-minutes: 10
     steps:
