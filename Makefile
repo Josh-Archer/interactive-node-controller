@@ -32,7 +32,7 @@ test-api:
 
 # Requires KUBECONFIG to point at a disposable Kind cluster (kind-* context).
 test-kind:
-	KIND_INTEGRATION=true go test ./internal/controller -run '^TestEvictionKindPDBSafety$$' -count=1 -v
+	KIND_INTEGRATION=true go test ./internal/controller -run '^Test(EvictionKindPDBSafety|CRDUpgradeKind)$$' -count=1 -v
 
 # Creates and deletes Kind cluster inc-recovery. Not part of verify.
 test-recovery:
