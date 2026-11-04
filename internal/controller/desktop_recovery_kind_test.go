@@ -296,10 +296,19 @@ func (h *recoveryHarness) installCRD() {
 	} else if err != nil {
 		h.t.Fatal(err)
 	}
-	h.poll(30*time.Second, "CRD Established", func(ctx context.Context) (bool, error) {
+	// Shared CI runners can take well over 30s to register a fresh CRD right
+	// after kind reports Ready, and individual Gets may time out while the
+	// apiserver is still busy; treat both as "not yet" instead of failing.
+	h.poll(3*time.Minute, "CRD Established", func(ctx context.Context) (bool, error) {
 		current := &apiextensionsv1.CustomResourceDefinition{}
-		if err := h.direct.Get(ctx, types.NamespacedName{Name: crd.Name}, current); err != nil {
-			return false, err
+		getCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := h.direct.Get(getCtx, types.NamespacedName{Name: crd.Name}, current); err != nil {
+			if ctx.Err() != nil {
+				return false, err
+			}
+			h.t.Logf("CRD Established: transient error, retrying: %v", err)
+			return false, nil
 		}
 		for _, condition := range current.Status.Conditions {
 			if condition.Type == apiextensionsv1.Established && condition.Status == apiextensionsv1.ConditionTrue {

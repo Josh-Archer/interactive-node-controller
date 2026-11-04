@@ -20,7 +20,7 @@ env:
   CHART_REPOSITORY: oci://ghcr.io/josh-archer/charts
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
@@ -53,7 +53,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: uecb-shared
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
@@ -92,7 +92,7 @@ jobs:
           retention-days: 1
   publish-image:
     needs: [prepare, build-image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     permissions:
       contents: read
       packages: write
@@ -129,7 +129,7 @@ jobs:
           echo "\`ghcr.io/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
   publish-chart:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     permissions:
       contents: read
       packages: write
@@ -156,7 +156,7 @@ jobs:
           echo "\`${{ env.CHART_REPOSITORY }}/interactive-node-controller --version ${{ needs.prepare.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
   build-reporter:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     permissions:
       contents: read
       id-token: write
@@ -240,7 +240,7 @@ jobs:
           retention-days: 1
   github-release:
     needs: [prepare, publish-image, publish-chart, build-reporter]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
     permissions:
       contents: write
     steps:
