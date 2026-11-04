@@ -123,8 +123,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 			if err := r.finalize(ctx, activity); err != nil {
 				return ctrl.Result{}, err
 			}
+			before := activity.DeepCopy()
 			controllerutil.RemoveFinalizer(activity, NodeActivityFinalizer)
-			if err := r.Update(ctx, activity); err != nil {
+			if err := r.patchFinalizers(ctx, activity, before); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -153,8 +154,9 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	}
 
 	if !controllerutil.ContainsFinalizer(activity, NodeActivityFinalizer) {
+		before := activity.DeepCopy()
 		controllerutil.AddFinalizer(activity, NodeActivityFinalizer)
-		if err := r.Update(ctx, activity); err != nil {
+		if err := r.patchFinalizers(ctx, activity, before); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -866,4 +868,13 @@ func (r *NodeActivityReconciler) setCondition(ctx context.Context, activity *ava
 		return err
 	}
 	return nil
+}
+
+// patchFinalizers writes only metadata.finalizers. A full Update would send
+// the controller's cached copy of spec, and during a CRD upgrade that copy can
+// be decoded through the previous schema (missing spec.windows and
+// spec.leadTime), silently wiping fields that GitOps just applied. The
+// resourceVersion precondition keeps concurrent finalizer edits safe.
+func (r *NodeActivityReconciler) patchFinalizers(ctx context.Context, activity, before *availabilityv1alpha1.NodeActivity) error {
+	return r.Patch(ctx, activity, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 }
