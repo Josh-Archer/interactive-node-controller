@@ -208,6 +208,27 @@ separate secure path for the reporter credential.
 Git-owned enrollment. The reporter credential must use the same namespace/name
 and is restricted to that object's `status` subresource.
 
+### Upgrade ordering and CRD schema readiness
+
+Upgrades must establish the `NodeActivity` CRD schema before rolling out the
+controller `Deployment` or applying `NodeActivity` manifests that use newly
+added schema fields:
+
+1. **Sync-wave ordering**:
+   - Wave `-1`: `CustomResourceDefinition` `nodeactivities.availability.interactive-node.io` (`chart/crds/availability.interactive-node.io_nodeactivities.yaml` and `config/crd/bases/availability.interactive-node.io_nodeactivities.yaml` carry `argocd.argoproj.io/sync-wave: "-1"`).
+   - Wave `0`: Controller `ClusterRole`, `ClusterRoleBinding`, `ServiceAccount`, `Service`, and `Deployment` (`chart/templates/deployment.yaml` carries `argocd.argoproj.io/sync-wave: "0"`).
+   - Wave `1`: Consumer `NodeActivity` enrollments (`examples/nodeactivity.yaml` carries `argocd.argoproj.io/sync-wave: "1"`).
+2. **GitOps `ServerSideApply` two-step rollout for new CRD fields**:
+   - ArgoCD applications configured with `ServerSideApply=true` run a server-side structured-merge diff against the **live** cluster CRD schema across all resources in the Application before executing sync wave `-1`.
+   - If a single commit simultaneously upgrades the CRD and adds newly introduced fields (for example `spec.windows` or `spec.leadTime`) to a `NodeActivity` manifest in the same Application, the pre-sync diff fails with `ComparisonError: ... field not declared in schema` before wave `-1` can apply the new CRD.
+   - To avoid this, roll out the updated CRD and controller in step 1, wait for the CRD to be `Established` and the controller `Deployment` to report `Ready`, and then add the new `NodeActivity` fields in step 2 (or manage the CRD in an upstream Application that syncs first).
+3. **Direct Helm upgrades**:
+   - Helm 3 installs `chart/crds/` during `helm install` but does not update existing CRDs during `helm upgrade`. Always apply the release CRD manifest (`kubectl apply --server-side -f config/crd/bases/availability.interactive-node.io_nodeactivities.yaml`) before running `helm upgrade`.
+4. **Controller `/readyz` CRD schema gate (`crd-schema`)**:
+   - The controller's `/readyz` endpoint reads `nodeactivities.availability.interactive-node.io` via the Kubernetes API (`get` on `customresourcedefinitions` scoped to `resourceNames: [nodeactivities.availability.interactive-node.io]`) and verifies that `v1alpha1` is served with the `status` subresource and every expected `spec` and `status` property (`spec.nodeName`, `spec.leadTime`, `spec.windows`, `status.managedTaint`, `status.admission`, `status.conditions`, etc.).
+   - If the installed CRD is missing, not yet `Established`, or on an older schema, `/readyz` returns HTTP 500 naming the missing fields (for example `installed CRD nodeactivities.availability.interactive-node.io (v1alpha1) schema is older than expected: missing fields [spec.leadTime, spec.windows, status.admission]; apply the current CRD before upgrading the controller`), keeping the new Pod unready while `/healthz` stays alive.
+   - Once the updated CRD is applied and `Established`, `/readyz` transitions to HTTP 200 OK automatically without restarting the controller.
+
 ## Phase 3 safe eviction
 
 Eviction is disabled and audit-only by default. A consumer must explicitly set
