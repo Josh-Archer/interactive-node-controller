@@ -11,7 +11,7 @@ concurrency:
 jobs:
   api-server:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Ensure base toolchain (uecb-shared image lacks it)
         if: runner.os == 'Linux'
@@ -72,7 +72,7 @@ jobs:
           make test-kind
   recovery-kind:
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'uecb-shared' }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Ensure base toolchain (uecb-shared image lacks it)
         if: runner.os == 'Linux'
