@@ -18,6 +18,7 @@ for path in [Path("config/crd/bases/availability.interactive-node.io_nodeactivit
     data = yaml.safe_load(path.read_text())
     documents.append(data)
     assert data["kind"] == "CustomResourceDefinition"
+    assert data["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
     assert data["spec"]["names"]["kind"] == "NodeActivity"
     version = data["spec"]["versions"][0]
     assert version["subresources"] == {"status": {}}
@@ -28,6 +29,11 @@ PY
 
 grep -q 'resources: \[nodes\]' chart/templates/rbac.yaml
 grep -q 'resources: \[nodeactivities/status\]' chart/templates/rbac.yaml
+grep -q 'resources: \[customresourcedefinitions\]' chart/templates/rbac.yaml
+grep -q 'resourceNames: \[nodeactivities.availability.interactive-node.io\]' chart/templates/rbac.yaml
+grep -q 'argocd.argoproj.io/sync-wave: "0"' chart/templates/deployment.yaml
+grep -q 'argocd.argoproj.io/sync-wave: "1"' examples/nodeactivity.yaml
+grep -q 'NewCRDSchemaReadyzCheck' cmd/interactive-node-controller/main.go
 grep -q 'TaintAppliedCondition' internal/controller/nodeactivity_controller.go
 grep -q 'reconcileOwnedTaint' internal/controller/nodeactivity_controller.go
 grep -q 'Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.requestsForEnrolledNode)' internal/controller/nodeactivity_controller.go

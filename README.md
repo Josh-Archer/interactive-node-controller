@@ -46,6 +46,12 @@ helm upgrade --install interactive-node-controller \
 
 Alternatively, customize values using [`examples/helm-values.yaml`](examples/helm-values.yaml) or a GitOps kustomization ([`examples/gitops-kustomization.yaml`](examples/gitops-kustomization.yaml)).
 
+> **Upgrade ordering (CRD before controller before new enrollment fields):**
+> - The `NodeActivity` CRD (`chart/crds/` and `config/crd/bases/`) carries `argocd.argoproj.io/sync-wave: "-1"`, the controller `Deployment` carries `argocd.argoproj.io/sync-wave: "0"`, and [`examples/nodeactivity.yaml`](examples/nodeactivity.yaml) carries `argocd.argoproj.io/sync-wave: "1"`.
+> - Helm 3 installs `chart/crds/` on `helm install` but does not update CRDs on `helm upgrade`; apply the release CRD manifest (`kubectl apply --server-side -f config/crd/bases/availability.interactive-node.io_nodeactivities.yaml`) before running `helm upgrade`.
+> - In ArgoCD environments using `ServerSideApply`, pre-sync diffing validates `NodeActivity` manifests against the **live** cluster CRD schema before wave `-1` executes. When upgrading to a release that introduces new `NodeActivity` fields (such as `spec.windows` or `spec.leadTime`), roll out the CRD and controller upgrade first and commit `NodeActivity` manifests that use the new fields in a follow-up revision once the CRD upgrade is `Established`.
+> - The controller's `/readyz` probe (`crd-schema`) verifies the live `nodeactivities.availability.interactive-node.io` CRD schema and fails readiness clearly (naming the missing fields) if the installed CRD is older than expected. See [controller operations](docs/controller.md#upgrade-ordering-and-crd-schema-readiness).
+
 ### 2. Enroll an Interactive Worker Node
 
 Apply a `NodeActivity` resource for each interactive workstation or GPU node ([`examples/nodeactivity.yaml`](examples/nodeactivity.yaml)):
@@ -154,7 +160,7 @@ later phases.
 
 `make test-api` runs the CRD and eviction API tests against pinned Kubernetes
 1.32 envtest assets and a local API server. `make test-kind` exercises PDB
-admission in a disposable Kind cluster; set `KUBECONFIG` to that cluster's
+admission and CRD-before-controller upgrade ordering in a disposable Kind cluster; set `KUBECONFIG` to that cluster's
 kubeconfig first. The test refuses contexts whose name does not start with
 `kind-`, and removes its test namespace when it finishes. CI creates and removes
 its own Kubernetes 1.32.0 Kind cluster.

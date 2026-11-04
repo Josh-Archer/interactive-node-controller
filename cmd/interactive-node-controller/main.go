@@ -10,6 +10,7 @@ import (
 	availabilityv1alpha1 "github.com/Josh-Archer/interactive-node-controller/api/v1alpha1"
 	"github.com/Josh-Archer/interactive-node-controller/internal/controller"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -82,6 +83,9 @@ func run() error {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		return err
 	}
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		return err
+	}
 	if err := availabilityv1alpha1.AddToScheme(scheme); err != nil {
 		return err
 	}
@@ -106,7 +110,7 @@ func run() error {
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err
 	}
-	if err := manager.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := manager.AddReadyzCheck("crd-schema", controller.NewCRDSchemaReadyzCheck(manager.GetAPIReader())); err != nil {
 		return err
 	}
 	return manager.Start(ctrl.SetupSignalHandler())

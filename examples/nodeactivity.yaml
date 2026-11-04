@@ -3,6 +3,8 @@ kind: NodeActivity
 metadata:
   name: workstation-1
   namespace: interactive-node-controller
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
   labels:
     app.kubernetes.io/part-of: interactive-node-controller
 spec:

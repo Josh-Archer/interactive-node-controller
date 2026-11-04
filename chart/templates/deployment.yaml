@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "interactive-node-controller.fullname" . }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
   labels:
     app.kubernetes.io/name: {{ include "interactive-node-controller.name" . }}
     app.kubernetes.io/instance: {{ .Release.Name }}
@@ -71,7 +73,7 @@ spec:
           livenessProbe:
             httpGet: {path: /healthz, port: health}
           readinessProbe:
-            httpGet: {path: /readyz, port: health}
+            httpGet: {path: /readyz/crd-schema, port: health}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:

@@ -34,7 +34,7 @@ jobs:
           cache: true
       - name: Install pinned Kind
         run: go install sigs.k8s.io/kind@v0.27.0
-      - name: Exercise PodDisruptionBudget eviction behavior
+      - name: Exercise PodDisruptionBudget eviction and CRD upgrade ordering
         run: |
           trap 'kind delete cluster --name inc37' EXIT
           kind create cluster --name inc37 --image kindest/node:v1.32.0 --wait 60s

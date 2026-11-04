@@ -1,16 +1,26 @@
 # Example environment-agnostic GitOps kustomization
 # Consumers reference release manifests or render the OCI Helm chart.
+#
+# Required upgrade ordering:
+#   1. CustomResourceDefinition (argocd.argoproj.io/sync-wave: "-1")
+#   2. Controller RBAC and Deployment (argocd.argoproj.io/sync-wave: "0")
+#   3. NodeActivity enrollments (argocd.argoproj.io/sync-wave: "1")
+#
+# When an upgrade adds new NodeActivity schema fields (for example spec.windows
+# or spec.leadTime) in a GitOps environment using ServerSideApply, roll out the
+# CRD and controller upgrade first so the live CRD schema is established before
+# committing NodeActivity manifests that set the new fields.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 namespace: interactive-node-controller
 
 resources:
-  # 1. CustomResourceDefinition
+  # 1. CustomResourceDefinition (wave -1; must be established before controller and enrollments)
   - https://raw.githubusercontent.com/Josh-Archer/interactive-node-controller/main/config/crd/bases/availability.interactive-node.io_nodeactivities.yaml
-  # 2. NodeActivity enrollment for worker node(s)
+  # 2. NodeActivity enrollment for worker node(s) (wave 1)
   - nodeactivity.yaml
   # 3. Least-privilege reporter RBAC
   - nodeactivity-rbac.yaml
-  # 4. Controller deployment (rendered from chart or pinned manifests)
+  # 4. Controller deployment (wave 0; rendered from chart with --include-crds or pinned manifests)
   # - deployment.yaml
