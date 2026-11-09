@@ -12,6 +12,13 @@ SHA-256 checksums and build provenance. The workflow also creates the matching
 GitHub Release and attaches the reporter artifacts. A manual rerun must name an
 existing release tag.
 
+Every merge to `main` whose CI passes is released automatically by
+`.github/workflows/auto-release.yml`: it picks the next patch version (the next
+minor for a `type!:` / `BREAKING CHANGE` commit while the major version is 0),
+tags the merged commit and starts the Release workflow on that tag. Merges that
+only touch docs, Markdown, `.github/`, `examples/` or tests are not released.
+See `scripts/next-release-version.sh`.
+
 Consumers pin both the chart version and the image digest in reviewed GitOps:
 
 ```yaml
