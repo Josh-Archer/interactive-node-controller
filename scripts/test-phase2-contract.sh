@@ -52,4 +52,46 @@ else:
     raise SystemExit("nodes rule missing from chart RBAC")
 print("node watch RBAC contract checks passed")
 PY
+python3 - <<'PY'
+from pathlib import Path
+import re
+import yaml
+
+crd = yaml.safe_load(Path("config/crd/bases/availability.interactive-node.io_nodeactivities.yaml").read_text())
+assert crd["kind"] == "CustomResourceDefinition"
+crd_name = crd["metadata"]["name"]
+assert crd_name, "CRD metadata.name must be set"
+assert "*" not in crd_name
+
+chart_crd = yaml.safe_load(Path("chart/crds/availability.interactive-node.io_nodeactivities.yaml").read_text())
+assert chart_crd["metadata"]["name"] == crd_name
+
+sanitized = re.sub(r"\{\{.*?\}\}", "placeholder", Path("chart/templates/rbac.yaml").read_text())
+documents = [doc for doc in yaml.safe_load_all(sanitized) if doc]
+cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+
+crd_rules = []
+for rule in cluster_role.get("rules", []):
+    api_groups = rule.get("apiGroups") or []
+    resources = rule.get("resources") or []
+    matches_group = "apiextensions.k8s.io" in api_groups or "*" in api_groups
+    matches_resource = any(
+        resource in {"customresourcedefinitions", "customresourcedefinitions/*", "*"}
+        for resource in resources
+    )
+    if matches_group and matches_resource:
+        crd_rules.append(rule)
+
+assert len(crd_rules) == 1, f"ClusterRole must grant CRD access with exactly one rule, got {crd_rules!r}"
+rule = crd_rules[0]
+assert rule.get("apiGroups") == ["apiextensions.k8s.io"], rule
+assert rule.get("resources") == ["customresourcedefinitions"], rule
+assert rule.get("verbs") == ["get"], rule
+assert rule.get("resourceNames") == [crd_name], rule
+for field in ("apiGroups", "resources", "verbs", "resourceNames"):
+    assert "*" not in (rule.get(field) or []), f"{field} must not use a wildcard: {rule.get(field)!r}"
+for verb in ("list", "watch", "create", "update", "patch", "delete"):
+    assert verb not in (rule.get("verbs") or []), rule
+print("scoped CRD get RBAC contract checks passed")
+PY
 echo 'phase 2 contract checks passed'
