@@ -27,7 +27,7 @@ func TestReconcileOwnsOnlyConfiguredTaint(t *testing.T) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}, {Key: "availability.interactive-node.io/state", Value: "old", Effect: corev1.TaintEffectPreferNoSchedule}}}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}, {Key: "availability.interactive-node.io/state", Value: "old", Effect: corev1.TaintEffectPreferNoSchedule}}}}
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestReconcileOwnsOnlyConfiguredTaint(t *testing.T) {
 func TestReconcileIdleRemovesOnlyOwnedTaint(t *testing.T) {
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
 	activity := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"}, Status: availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now}}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Effect: corev1.TaintEffectNoSchedule}, {Key: testPolicy().Key, Value: "active", Effect: corev1.TaintEffectNoSchedule}}}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Effect: corev1.TaintEffectNoSchedule}, {Key: testPolicy().Key, Value: "active", Effect: corev1.TaintEffectNoSchedule}}}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -85,7 +85,7 @@ func TestReconcileIdleRemovesOnlyOwnedTaint(t *testing.T) {
 func TestReconcileStaleHeartbeatFailsClosed(t *testing.T) {
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
 	activity := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"}, Status: availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now.Add(-2 * time.Minute)}}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -104,7 +104,7 @@ func TestReconcileStaleHeartbeatFailsClosed(t *testing.T) {
 func TestReconcileUnsupportedActiveActivityFailsClosed(t *testing.T) {
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
 	activity := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"}, Status: availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityUnknown, HeartbeatAt: now}}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -129,7 +129,7 @@ func TestReconcileAddsFinalizer(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -159,7 +159,7 @@ func TestReconcileDeleteRemovesOwnedTaintAndFinalizer(t *testing.T) {
 		},
 		Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"},
 	}
-	node := &corev1.Node{
+	node := &corev1.Node{Status: readyNodeStatus(),
 		ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"},
 		Spec: corev1.NodeSpec{
 			Taints: []corev1.Taint{
@@ -265,7 +265,7 @@ func TestReconcileDeleteNodeWithoutOwnedTaintRemovesFinalizer(t *testing.T) {
 		},
 		Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "workstation-1"},
 	}
-	node := &corev1.Node{
+	node := &corev1.Node{Status: readyNodeStatus(),
 		ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"},
 		Spec: corev1.NodeSpec{
 			Taints: []corev1.Taint{
@@ -311,7 +311,7 @@ func TestReconcileSchedulableNodeLabel(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -362,7 +362,7 @@ func TestReconcileBurstTaintKey(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)

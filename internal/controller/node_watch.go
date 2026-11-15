@@ -36,7 +36,7 @@ func (r *NodeActivityReconciler) requestsForEnrolledNode(ctx context.Context, ob
 }
 
 // nodeOwnedFieldsChanged accepts Node events that can drift fields this controller owns.
-// Kubelet status heartbeats leave those fields unchanged and do not enqueue work.
+// Ready state/transition changes enqueue work; timestamp-only kubelet heartbeats do not.
 func (r *NodeActivityReconciler) nodeOwnedFieldsChanged() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc:  func(event.CreateEvent) bool { return true },
@@ -47,6 +47,11 @@ func (r *NodeActivityReconciler) nodeOwnedFieldsChanged() predicate.Predicate {
 			newNode, okNew := e.ObjectNew.(*corev1.Node)
 			if !okOld || !okNew {
 				return false
+			}
+			oldReady, oldTransition := nodeReadyProjection(oldNode)
+			newReady, newTransition := nodeReadyProjection(newNode)
+			if oldReady != newReady || !oldTransition.Equal(&newTransition) {
+				return true
 			}
 			if schedulableLabelValue(oldNode) != schedulableLabelValue(newNode) {
 				return true

@@ -10,15 +10,15 @@ Node access.
 The controller has Node `get`, `list`, `watch`, `patch`, and `update`
 permission. It reconciles one configured taint key and, when configured, the
 burst taint key. It removes and replaces only taints matching those keys;
-unrelated Node taints remain untouched. It does not create, delete, evict, or
-modify Pods, Deployments, StatefulSets, DaemonSets, or any other workload spec.
+unrelated Node taints remain untouched. It never creates or deletes Pods directly or modifies workload specs. Opt-in
+Phase 3 eviction uses only the policy/v1 Eviction API with the safety gates below.
 
 `NodeActivityReconciler.SetupWithManager` watches Node objects. A change to a
 managed taint (key, value, or effect) or to the
 `availability.interactive-node.io/schedulable` label enqueues every
 `NodeActivity` that enrolls that Node, and the controller restores the desired
-state. Node status updates that leave those fields unchanged stay off the
-queue, and kubelet heartbeats keep their existing reconcile schedule. Node
+state. Node Ready status or LastTransitionTime changes also enqueue reconciliation.
+Routine LastHeartbeatTime-only updates stay off the queue. Node
 create and delete events also enqueue those enrollments, which applies
 protection when a Node appears and records `NodeNotFound` when it disappears.
 
@@ -76,6 +76,41 @@ resources are deleted, nothing processes the finalizer and deletion will hang.
 In that scenario, manual recovery requires patching the `NodeActivity` to remove
 the `availability.interactive-node.io/cleanup` finalizer (`kubectl patch ...`)
 and removing the owned taint with `kubectl taint nodes <node> <key>-`.
+
+## Node outage and recovery boundary
+
+Admission requires **both** a fresh idle host report and an explicit Kubernetes
+`NodeReady=True` condition. Missing, False, Unknown or malformed Ready status
+fences the enrolled node immediately on reconciliation, even if the reporter
+still says idle. INC removes its schedulable label and applies its own
+`unavailable:NoSchedule` taint (and configured burst fence). This node-readiness
+gate is mandatory and independent of the reporter `failClosed` option.
+
+After Ready recovers, a nonzero reporter heartbeat must be at or after Ready's
+`LastTransitionTime` before admission can reopen. A missing transition timestamp
+fails closed; a missing/expired/future heartbeat retains its existing freshness
+protection. Admission reasons `node-not-ready` and `node-recovery-pending` appear
+in status and the existing admission metric. Watches plus a bounded 30-second
+recheck keep recovery observable. This comparison uses host timestamps: correct
+NTP rather than bypassing the fence if a Ready timestamp is ahead of the reporter.
+It is not a cooldown, boot-ID fence, or guarantee that a reboot without a Ready
+transition is detected.
+
+**Admission fencing is not workload recovery.** NoSchedule does not migrate
+existing pods. This change adds no eviction permission or eligibility and does
+not modify native unreachable taints, tolerations, replicas, PDBs, priorities,
+PVCs, or workloads. Standard pods are not made eligible by node loss; only the
+pre-existing explicit lossy policy can evict on stale reporter state. Native
+Kubernetes recovery still applies. StatefulSet identity and network partitions
+may prevent safe replacement beyond the usual unreachable toleration period;
+never force-delete or label critical/stateful services lossy to hide an outage.
+
+Consumers must keep critical singletons off frequently interrupted workers,
+validate supported HA/anti-affinity and actual spare CPU/memory/GPU/storage,
+and test end-to-end reachability. A bounded eligible-node selector permits
+placement; it does not prove GPU framebuffer isolation or recovery time. Roll
+out a signed INC release only through separately reviewed consumer GitOps pins.
+Do not claim service recovery from INC admission/eviction metrics alone.
 
 ## State and stale behavior
 
@@ -268,7 +303,7 @@ of a fresh `unknown` report, and it never authorizes eviction of a standard pod.
 | --- | --- | --- |
 | Fresh idle and no desired taint, including a scheduled `idle-allowed` window on a fresh idle report. A leftover burst `NoSchedule` taint does not evict. | no | no |
 | Fresh active `interactive`, an availability hold, or a scheduled `interactive` window (`PreferNoSchedule` with the interactive value is desired and applied) | no | yes |
-| Fresh active `game` with the active `NoSchedule` taint desired and applied, whether or not the burst fence is also present | yes | yes |
+| Fresh active `game` with the active `NoSchedule` taint desired and applied, whether or not the burst fence is also present | yes, only with Node Ready=True and a heartbeat at/after its nonzero Ready transition | yes |
 | Fresh `state=unknown` (reporter startup or debounce), including when fail-closed `NoSchedule` and the burst `NoSchedule` fence are both applied | no | no |
 | Heartbeat missing or older than `staleAfter`, or reporter `state=stale`, while fail-closed `NoSchedule` is desired and applied. An expired heartbeat stays on this row even if the last activity was `game`. | no | yes |
 | Heartbeat further ahead than `heartbeat-skew` (`InvalidHeartbeat`), while fail-closed `NoSchedule` is desired and applied. A burst fence may also be present. The timestamp leaves eviction inactive. Reporter `state=stale` stays on the row above. | no | no |

@@ -24,15 +24,15 @@ func TestRequestsForEnrolledNode(t *testing.T) {
 	laptop := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Name: "laptop", Namespace: "other"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "laptop"}}
 	reconciler := &NodeActivityReconciler{Client: fakeClient(t, desktop, duplicate, laptop), Policy: testPolicy()}
 
-	got := requestKeys(reconciler.requestsForEnrolledNode(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}))
+	got := requestKeys(reconciler.requestsForEnrolledNode(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}))
 	if len(got) != 2 || !got["availability/desktop"] || !got["other/desktop-dup"] {
 		t.Fatalf("desktop requests = %#v", got)
 	}
-	got = requestKeys(reconciler.requestsForEnrolledNode(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "laptop"}}))
+	got = requestKeys(reconciler.requestsForEnrolledNode(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "laptop"}}))
 	if len(got) != 1 || !got["other/laptop"] {
 		t.Fatalf("laptop requests = %#v", got)
 	}
-	if requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "missing"}}); len(requests) != 0 {
+	if requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "missing"}}); len(requests) != 0 {
 		t.Fatalf("missing node requests = %#v", requests)
 	}
 	if requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{}); requests != nil {
@@ -58,8 +58,8 @@ func TestOutOfBandManagedTaintReconcilesFromNodeMapping(t *testing.T) {
 		Spec:       availabilityv1alpha1.NodeActivitySpec{NodeName: "laptop"},
 		Status:     availabilityv1alpha1.NodeActivityStatus{State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop", Labels: map[string]string{"unrelated": "keep"}}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
-	laptop := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "laptop"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop", Labels: map[string]string{"unrelated": "keep"}}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
+	laptop := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "laptop"}}
 	reconciler := &NodeActivityReconciler{Client: fakeClient(t, activity, other, node, laptop), Clock: clocktesting.NewFakeClock(now), Policy: policy}
 	reconcileAll := func(object client.Object) {
 		t.Helper()
@@ -149,11 +149,11 @@ func TestNodeOwnedFieldsChangedPredicate(t *testing.T) {
 		mutate(next)
 		return predicate.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: next})
 	}
-	if changed(func(node *corev1.Node) {
+	if !changed(func(node *corev1.Node) {
 		node.Status.Conditions[0].Status = corev1.ConditionFalse
 		node.ResourceVersion = "2"
 	}) {
-		t.Fatal("status-only update enqueued a reconcile")
+		t.Fatal("Ready transition did not enqueue a reconcile")
 	}
 	if changed(func(node *corev1.Node) {
 		node.Labels["zone"] = "a"

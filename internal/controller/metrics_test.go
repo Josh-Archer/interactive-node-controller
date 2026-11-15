@@ -200,7 +200,7 @@ func TestReconcileExportsMetricsAndCleansUp(t *testing.T) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{
+	node := &corev1.Node{Status: readyNodeStatus(),
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
 	}
 	scheme := runtime.NewScheme()

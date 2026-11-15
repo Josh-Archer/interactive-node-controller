@@ -52,7 +52,7 @@ func TestScheduledWindowEnvtest(t *testing.T) {
 	if err := api.Create(context.Background(), activity); err != nil {
 		t.Fatal(err)
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: activity.Spec.NodeName}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: activity.Spec.NodeName}}
 	if err := api.Create(context.Background(), node); err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestReconcileRequeuesAtLeadTimeWithoutReporterEvent(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: start,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "workstation-1"}}
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)

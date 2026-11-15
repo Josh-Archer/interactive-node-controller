@@ -263,7 +263,7 @@ func evictionFixture(t *testing.T, state availabilityv1alpha1.State, activityTyp
 	t.Helper()
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
 	activity := &availabilityv1alpha1.NodeActivity{ObjectMeta: metav1.ObjectMeta{Name: "desktop", Namespace: "availability"}, Spec: availabilityv1alpha1.NodeActivitySpec{NodeName: "desktop"}, Status: availabilityv1alpha1.NodeActivityStatus{State: state, Activity: activityType, HeartbeatAt: now}}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: testPolicy().Key, Value: testPolicy().ActiveValue, Effect: effect}}}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: testPolicy().Key, Value: testPolicy().ActiveValue, Effect: effect}}}}
 	objects := []runtime.Object{activity, node}
 	for _, pod := range pods {
 		objects = append(objects, pod)
@@ -488,7 +488,7 @@ func TestIndexPodNodeName(t *testing.T) {
 		t.Fatalf("expected nil for empty nodeName, got %#v", values)
 	}
 
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "some-node"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "some-node"}}
 	if values := IndexPodNodeName(node); values != nil {
 		t.Fatalf("expected nil for non-Pod object, got %#v", values)
 	}
@@ -528,7 +528,7 @@ func TestEvictionFailsWhenIndexMissing(t *testing.T) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{
+	node := &corev1.Node{Status: readyNodeStatus(),
 		ObjectMeta: metav1.ObjectMeta{Name: "desktop"},
 		Spec:       corev1.NodeSpec{Taints: []corev1.Taint{{Key: "availability.interactive-node.io/state", Value: "active", Effect: corev1.TaintEffectNoSchedule}}},
 	}
@@ -572,7 +572,7 @@ func BenchmarkReconcileEvictions_ManyOffNodePods(b *testing.B) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{
+	node := &corev1.Node{Status: readyNodeStatus(),
 		ObjectMeta: metav1.ObjectMeta{Name: "desktop"},
 		Spec:       corev1.NodeSpec{Taints: []corev1.Taint{{Key: "availability.interactive-node.io/state", Value: "active", Effect: corev1.TaintEffectNoSchedule}}},
 	}

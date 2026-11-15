@@ -111,7 +111,7 @@ func TestEnrollmentAPIIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
 	if err := direct.Create(ctx, node); err != nil {
 		t.Fatal(err)
 	}

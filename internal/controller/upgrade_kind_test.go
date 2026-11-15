@@ -89,7 +89,7 @@ func TestCRDUpgradeKind(t *testing.T) {
 	if err := direct.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := direct.Create(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}); err != nil {
+	if err := direct.Create(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -107,7 +107,7 @@ func TestCRDUpgradeKind(t *testing.T) {
 			}
 			_ = direct.Delete(cleanupCtx, activity)
 		}
-		_ = direct.Delete(cleanupCtx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
+		_ = direct.Delete(cleanupCtx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
 		_ = direct.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 	})
 

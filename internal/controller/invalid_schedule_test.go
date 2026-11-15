@@ -55,7 +55,7 @@ func newIdleFixture(t *testing.T, now time.Time, objects ...client.Object) *sche
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)

@@ -310,7 +310,9 @@ func (r *NodeActivityReconciler) evictionClass(activity *availabilityv1alpha1.No
 
 	// An expired heartbeat is the stale row, even if the last report was an
 	// active game and the active NoSchedule taint has not been replaced yet.
-	if fresh &&
+	ready, readyAt := nodeReadyProjection(node)
+	if fresh && ready == corev1.ConditionTrue && !readyAt.IsZero() &&
+		!activity.Status.HeartbeatAt.Before(readyAt.Time) &&
 		activity.Status.State == availabilityv1alpha1.StateActive &&
 		activity.Status.Activity == availabilityv1alpha1.ActivityGame &&
 		desired != nil && desired.Effect == corev1.TaintEffectNoSchedule && desired.Value == r.Policy.ActiveValue &&
