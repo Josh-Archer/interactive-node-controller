@@ -40,7 +40,7 @@ func TestIndexNodeActivityNodeName(t *testing.T) {
 	if values := IndexNodeActivityNodeName(spaced); len(values) != 1 || values[0] != "desktop " {
 		t.Fatalf("expected raw nodeName, got %#v", values)
 	}
-	if values := IndexNodeActivityNodeName(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}); values != nil {
+	if values := IndexNodeActivityNodeName(&corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}); values != nil {
 		t.Fatalf("expected nil for a non-NodeActivity, got %#v", values)
 	}
 }
@@ -50,8 +50,8 @@ func TestEnrollmentIndexCreationDeletionDuplicatesAndDrift(t *testing.T) {
 	defer resetMetricsForTesting()
 	ctx := context.Background()
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
-	desktop := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
-	laptopNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "laptop", Labels: map[string]string{"unrelated": "keep"}}}
+	desktop := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
+	laptopNode := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "laptop", Labels: map[string]string{"unrelated": "keep"}}}
 	game := enrolledActivity("availability", "game", "desktop", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, now)
 	idle := enrolledActivity("other", "idle", "desktop", availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, now)
 	laptop := enrolledActivity("other", "laptop", "laptop", availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, now)
@@ -61,7 +61,7 @@ func TestEnrollmentIndexCreationDeletionDuplicatesAndDrift(t *testing.T) {
 	for i := 0; i < offNode; i++ {
 		name := fmt.Sprintf("node-%02d", i)
 		objects = append(objects,
-			&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name}},
+			&corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: name}},
 			enrolledActivity("batch", name, name, availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, now),
 		)
 	}
@@ -106,7 +106,7 @@ func TestEnrollmentIndexCreationDeletionDuplicatesAndDrift(t *testing.T) {
 	observed.expectLast(t, "desktop", 2)
 	assertRequestKeys(t, reconciler.requestsForEnrolledNode(ctx, desktop), "availability/game", "other/idle")
 	observed.expectLast(t, "desktop", 2)
-	if requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "absent"}}); len(requests) != 0 {
+	if requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "absent"}}); len(requests) != 0 {
 		t.Fatalf("absent node requests = %#v", requests)
 	}
 	observed.expectLast(t, "absent", 0)
@@ -306,7 +306,7 @@ func TestEnrollmentIndexDeterministicOrder(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
+			node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
 			reconciler := &NodeActivityReconciler{
 				Client: indexedRuntimeClient(t, test.loser, test.winner, node),
 				Clock:  clocktesting.NewFakeClock(now),
@@ -335,7 +335,7 @@ func TestEnrollmentQueriesFailClosedWithoutIndex(t *testing.T) {
 	now := time.Date(2026, 8, 24, 20, 0, 0, 0, time.UTC)
 	activity := enrolledActivity("availability", "game", "desktop", availabilityv1alpha1.StateActive, availabilityv1alpha1.ActivityGame, now)
 	other := enrolledActivity("other", "laptop", "laptop", availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, now)
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: testPolicy().Key, Value: testPolicy().ActiveValue, Effect: corev1.TaintEffectNoSchedule}}}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: testPolicy().Key, Value: testPolicy().ActiveValue, Effect: corev1.TaintEffectNoSchedule}}}}
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -369,7 +369,7 @@ func TestEnrollmentIndexWorkScalesWithMatches(t *testing.T) {
 	const offNode = 200
 	const matches = 3
 	objects := make([]client.Object, 0, offNode+matches+1)
-	objects = append(objects, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}})
+	objects = append(objects, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}})
 	var sample *availabilityv1alpha1.NodeActivity
 	for i := 0; i < matches; i++ {
 		item := enrolledActivity("matches", fmt.Sprintf("desktop-%d", i), "desktop", availabilityv1alpha1.StateIdle, availabilityv1alpha1.ActivityIdle, now)
@@ -392,7 +392,7 @@ func TestEnrollmentIndexWorkScalesWithMatches(t *testing.T) {
 	if protection.count != matches {
 		t.Fatalf("protection examined %d enrollments, want %d matching of %d enrolled", protection.count, matches, matches+offNode)
 	}
-	requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}})
+	requests := reconciler.requestsForEnrolledNode(ctx, &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}})
 	observed.expectLast(t, "desktop", matches)
 	if len(requests) != matches {
 		t.Fatalf("node drift mapped %d enrollments, want %d", len(requests), matches)

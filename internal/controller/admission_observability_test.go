@@ -120,7 +120,7 @@ func TestEvictionBlockerReasonsStayBounded(t *testing.T) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -187,7 +187,7 @@ func TestAdmissionStatusMatchesNodeAndMetrics(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -350,7 +350,7 @@ func TestNextTransitionReusesWindowTelemetry(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -401,7 +401,7 @@ func TestHoldIsTheNextPolicyTransition(t *testing.T) {
 			State: availabilityv1alpha1.StateIdle, Activity: availabilityv1alpha1.ActivityIdle, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)
@@ -445,7 +445,7 @@ func TestMissingNodeClearsSignals(t *testing.T) {
 			State: availabilityv1alpha1.StateActive, Activity: availabilityv1alpha1.ActivityGame, HeartbeatAt: now,
 		},
 	}
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = availabilityv1alpha1.AddToScheme(scheme)

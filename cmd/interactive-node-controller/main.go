@@ -3,12 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	availabilityv1alpha1 "github.com/Josh-Archer/interactive-node-controller/api/v1alpha1"
 	"github.com/Josh-Archer/interactive-node-controller/internal/controller"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,6 +31,7 @@ func main() {
 }
 
 func run() error {
+	ctrl.SetLogger(logr.FromSlogHandler(slog.NewJSONHandler(os.Stderr, nil)))
 	var policy controller.TaintPolicy
 	var eviction controller.EvictionPolicy
 	var metricsAddress, probeAddress string

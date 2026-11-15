@@ -79,8 +79,8 @@ func TestNodeActivityNodeNameIndexEnvtest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	desktop := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
-	laptop := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "laptop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
+	desktop := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "desktop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
+	laptop := &corev1.Node{Status: readyNodeStatus(), ObjectMeta: metav1.ObjectMeta{Name: "laptop"}, Spec: corev1.NodeSpec{Taints: []corev1.Taint{{Key: "unrelated", Value: "keep", Effect: corev1.TaintEffectNoSchedule}}}}
 	if err := direct.Create(ctx, desktop); err != nil {
 		t.Fatal(err)
 	}

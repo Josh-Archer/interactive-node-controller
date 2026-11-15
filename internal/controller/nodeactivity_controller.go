@@ -94,7 +94,8 @@ func (p TaintPolicy) Validate() error {
 }
 
 // NodeActivityReconciler is the sole writer for its configured Node taint.
-// It does not create, delete, or mutate Pods or workload specifications.
+// It does not directly create/delete Pods or mutate workload specifications.
+// Opt-in eviction uses only the policy/v1 Eviction API and its safety gates.
 type NodeActivityReconciler struct {
 	client.Client
 	Policy   TaintPolicy
@@ -170,7 +171,6 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		return ctrl.Result{}, err
 	}
 	desired, reason, requeueAfter := protection.taint, protection.reason, protection.requeueAfter
-	admitted := r.policyAdmitted(protection, now)
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: activity.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -195,6 +195,12 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Readiness fencing is admission-only: retain the original reporter policy
+	// as the eviction authority, never the new outage fence.
+	evictionDesired := desired
+	protection = r.withNodeReadiness(protection, node)
+	desired, reason, requeueAfter = protection.taint, protection.reason, protection.requeueAfter
+	admitted := r.policyAdmitted(protection, now)
 	changedLabel := reconcileSchedulableLabel(node, admitted)
 	changedPrimary := reconcileOwnedTaint(node, r.Policy.Key, desired)
 	var changedBurst bool
@@ -238,7 +244,7 @@ func (r *NodeActivityReconciler) Reconcile(ctx context.Context, request ctrl.Req
 	r.observeNodeSignals(activity.Spec.NodeName, protection, burstApplied, scheduleErr != nil)
 	evictionSummary := r.evictionWithoutPods(false)
 	if protection.count == 1 {
-		evictionSummary, err = r.reconcileEvictions(ctx, activity, node, desired)
+		evictionSummary, err = r.reconcileEvictions(ctx, activity, node, evictionDesired)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -364,6 +370,7 @@ func (r *NodeActivityReconciler) finalize(ctx context.Context, activity *availab
 	if err != nil {
 		return err
 	}
+	protection = r.withNodeReadiness(protection, node)
 	changedLabel := reconcileSchedulableLabel(node, false)
 	changedPrimary := reconcileOwnedTaint(node, r.Policy.Key, protection.taint)
 	var changedBurst bool
